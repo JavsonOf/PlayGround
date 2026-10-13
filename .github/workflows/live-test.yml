@@ -1,0 +1,36 @@
+name: Live Claude test
+
+# Calls the real Claude API (costs tokens), so it only runs on demand or when
+# the live smoke test itself changes. Requires the ANTHROPIC_API_KEY secret.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Claude model id
+        default: claude-opus-5-5
+      effort:
+        description: Effort level
+        default: low
+  push:
+    paths:
+      - scripts/live_smoke.py
+      - .github/workflows/live-test.yml
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[anthropic]"
+      - name: Live smoke test
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AGENTIC_OS_MODEL: ${{ inputs.model || 'claude-opus-5-5' }}
+          AGENTIC_OS_EFFORT: ${{ inputs.effort || 'low' }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then echo "::error::ANTHROPIC_API_KEY secret is not set"; exit 1; fi
+          python scripts/live_smoke.py
