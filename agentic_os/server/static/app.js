@@ -40,7 +40,9 @@ function richText(text) {
   return frag;
 }
 const fmtTime = (ts) => ts ? new Date(ts * 1000).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" }) : "";
-const statusTag = (s) => el("span", { class: "tag " + ({ completed: "ok", failed: "err", running: "run", queued: "run" }[s] || ""), text: ({ completed: "gotowe", failed: "błąd", running: "w toku", queued: "w kolejce" }[s] || s) });
+const statusTag = (s) => el("span", { class: "tag " + ({ completed: "ok", failed: "err", running: "run", queued: "run", waiting: "warn" }[s] || ""), text: ({ completed: "gotowe", failed: "błąd", running: "w toku", queued: "w kolejce", waiting: "czeka na zgodę" }[s] || s) });
+const MODES = { standard: "", reflective: "🔁 refleksyjny", adaptive: "🎯 adaptacyjny" };
+const STRATEGIES = { zero_shot: "zwięzły", chain_of_thought: "krok po kroku", role: "ekspert" };
 
 async function api(path, { method = "GET", body } = {}) {
   const res = await fetch(path, {
@@ -130,6 +132,10 @@ function renderAgentReply(node, proc) {
   if (proc.status === "failed") { node.append(richText("⚠️ " + (proc.error || "Błąd"))); return; }
   const r = proc.result || {};
   node.append(richText(r.output || "(brak odpowiedzi)"));
+  if (r.reflection) {
+    node.append(el("details", {}, el("summary", { text: `🔁 Samoocena: ${Math.round(r.reflection.best_score * 100)}% (próby: ${r.reflection.attempts.length})` }),
+      ...r.reflection.attempts.map((a, i) => el("pre", { text: `Próba ${i + 1}: ${Math.round(a.score * 100)}%${a.critique ? "\n" + a.critique : ""}` }))));
+  }
   if (r.tool_calls && r.tool_calls.length) {
     node.append(el("details", {}, el("summary", { text: `🛠 Użyte narzędzia (${r.tool_calls.length})` }),
       ...r.tool_calls.map((c) => el("pre", { text: `${c.tool}(${JSON.stringify(c.arguments)})\n→ ${c.result}` }))));
@@ -144,7 +150,7 @@ function renderAgentReply(node, proc) {
       try { await api(`/processes/${proc.pid}/feedback`, { method: "POST", body: { reward } }); fb.querySelectorAll("button").forEach((b) => b.classList.remove("on")); ev.target.classList.add("on"); toast("Dzięki, agent się uczy."); } catch (err) { toast(err.message, true); }
     } }));
   }
-  node.append(el("div", { class: "meta" }, `${r.agent || ""} · kroki: ${r.steps || 1}${usage.input_tokens ? ` · tokeny: ${usage.input_tokens + usage.output_tokens}` : ""}`, fb));
+  node.append(el("div", { class: "meta" }, `${r.agent || ""}${r.strategy ? ` · 🎯 styl: ${STRATEGIES[r.strategy] || r.strategy}` : ""} · kroki: ${r.steps || 1}${usage.input_tokens ? ` · tokeny: ${usage.input_tokens + usage.output_tokens}` : ""}`, fb));
 }
 $("#chat-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -181,6 +187,8 @@ async function loadAgents() {
     el("p", { class: "muted small", text: a.description || "" }),
     a.tools && a.tools.length ? el("p", { class: "small", text: "🛠 " + a.tools.join(", ") }) : null,
     a.skills && a.skills.length ? el("p", { class: "small", text: "🎓 " + a.skills.join(", ") }) : null,
+    agentTraits(a),
+    a.learning ? el("p", { class: "small", text: "📈 " + Object.entries(a.learning.strategies).map(([k, v]) => `${STRATEGIES[k] || k}: ${v.pulls ? `${v.mean_reward > 0 ? "+" : ""}${v.mean_reward} (${v.pulls}×)` : "–"}`).join(" · ") + (a.learning.best ? ` → najlepszy: ${STRATEGIES[a.learning.best] || a.learning.best}` : "") }) : null,
     el("div", { class: "actions" },
       el("button", { class: "btn small", type: "button", text: "💬 Czat", onclick: () => { $("#chat-agent").value = a.name; store.set("aos_chat_agent", a.name); chatEmpty(); showTab("chat"); } }),
       a.name !== "assistant" ? el("button", { class: "btn small ghost danger", type: "button", text: "Usuń", onclick: async () => {
@@ -190,11 +198,16 @@ async function loadAgents() {
   const provSel = $("#agent-provider");
   provSel.replaceChildren(el("option", { value: "default", text: "Domyślny systemu" }), ...state.providers.map((p) => el("option", { value: p.id, text: p.label || p.id })));
   $("#agent-tools").replaceChildren(...state.tools.map((t) => el("label", { class: "chip" }, el("input", { type: "checkbox", name: "tools", value: t, checked: true }), t)));
+  $("#agent-delegates").replaceChildren(...state.agents.map((a) => el("label", { class: "chip" }, el("input", { type: "checkbox", name: "delegates", value: a.name }), a.name)));
   $("#crew-agents").replaceChildren(...state.agents.map((a) => el("label", { class: "chip" }, el("input", { type: "checkbox", name: "agents", value: a.name }), a.name)));
   const ext = $("#ext-preset");
   if (!ext.options.length) {
     ext.replaceChildren(el("option", { value: "", text: "— wybierz —" }), ...state.extPresets.map((p, i) => el("option", { value: String(i), text: p.label })));
   }
+}
+function agentTraits(a) {
+  const t = [MODES[a.mode], a.approval ? "✋ pyta o zgodę" : "", a.delegates && a.delegates.length ? "📨 zleca: " + a.delegates.join(", ") : ""].filter(Boolean);
+  return t.length ? el("p", { class: "small", text: t.join(" · ") }) : null;
 }
 $("#ext-preset").addEventListener("change", (e) => {
   const p = state.extPresets[Number(e.target.value)]; const f = $("#ext-form");
@@ -203,7 +216,8 @@ $("#ext-preset").addEventListener("change", (e) => {
 });
 $("#agent-form").addEventListener("submit", withBusy($("#agent-form"), async (fd) => {
   const body = { name: fd.get("name"), instructions: fd.get("instructions") || undefined, provider: fd.get("provider"),
-    model: fd.get("model") || undefined, tools: fd.getAll("tools"), skills: fd.getAll("skills"), conversational: fd.get("conversational") === "on" };
+    model: fd.get("model") || undefined, tools: fd.getAll("tools"), skills: fd.getAll("skills"), conversational: fd.get("conversational") === "on",
+    mode: fd.get("mode"), approval: fd.get("approval") === "on", delegates: fd.getAll("delegates") };
   await api("/agents", { method: "POST", body }); toast("Agent utworzony ✅"); $("#agent-form").reset(); loadAgents();
 }));
 $("#ext-form").addEventListener("submit", withBusy($("#ext-form"), async (fd) => {
@@ -236,6 +250,8 @@ async function openTask(pid) {
     box.replaceChildren(
       el("div", { class: "item-head" }, el("h3", { text: p.task.slice(0, 160) }), statusTag(p.status)),
       el("pre", { class: "out", text: p.error || r.output || JSON.stringify(r, null, 2) }),
+      r.reflection ? el("details", {}, el("summary", { text: `🔁 Samoocena: ${Math.round(r.reflection.best_score * 100)}% (próby: ${r.reflection.attempts.length})` }), ...r.reflection.attempts.map((a, i) => el("pre", { class: "out", text: `Próba ${i + 1}: ${Math.round(a.score * 100)}%${a.critique ? "\n" + a.critique : ""}` }))) : null,
+      r.strategy ? el("p", { class: "muted small", text: `🎯 Styl: ${STRATEGIES[r.strategy] || r.strategy}` }) : null,
       r.transcript ? el("details", {}, el("summary", { text: `Przebieg pracy zespołu (${r.transcript.length})` }), ...r.transcript.map((t) => el("pre", { class: "out", text: `${t.agent}: ${t.output || ""}` }))) : null,
       r.tool_calls && r.tool_calls.length ? el("details", {}, el("summary", { text: "Narzędzia" }), ...r.tool_calls.map((c) => el("pre", { class: "out", text: `${c.tool}(${JSON.stringify(c.arguments)}) → ${c.result}` }))) : null,
     );
@@ -398,12 +414,40 @@ window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); defe
 $("#install-btn").addEventListener("click", async () => { if (!deferredInstall) return; deferredInstall.prompt(); await deferredInstall.userChoice; deferredInstall = null; $("#install-btn").classList.add("hidden"); });
 if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
 
+/* ------------------------------------------------------- tool approvals */
+async function pollApprovals() {
+  clearTimeout(state.timers.approvals);
+  if (document.visibilityState === "visible" && !$("#app").classList.contains("hidden")) {
+    try {
+      const { approvals } = await api("/approvals");
+      renderApprovals(approvals);
+    } catch { /* offline or logged out: try again later */ }
+  }
+  state.timers.approvals = setTimeout(pollApprovals, 2500);
+}
+function renderApprovals(list) {
+  const box = $("#approvals");
+  box.classList.toggle("hidden", !list.length);
+  box.replaceChildren(...list.map((a) => el("div", { class: "approval" },
+    el("div", { class: "small" }, el("strong", { text: `✋ ${a.agent}` }), ` chce użyć narzędzia `, el("code", { text: a.tool })),
+    el("pre", { text: JSON.stringify(a.arguments, null, 2) }),
+    el("div", { class: "actions" },
+      el("button", { class: "btn primary", type: "button", text: "✅ Zezwól", onclick: () => decide(a.id, true) }),
+      el("button", { class: "btn ghost danger", type: "button", text: "⛔ Odmów", onclick: () => decide(a.id, false) })))));
+}
+async function decide(id, approve) {
+  try { await api(`/approvals/${id}`, { method: "POST", body: { approve } }); toast(approve ? "Zezwolono" : "Odmówiono"); } catch (err) { toast(err.message, true); }
+  pollApprovals();
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") pollApprovals(); });
+
 /* ------------------------------------------------------------------ start */
 async function start() {
   $("#login").classList.add("hidden"); $("#app").classList.remove("hidden");
   chatEmpty();
   try { await Promise.all([refreshAgents(), refreshProviders()]); } catch (err) { toast(err.message, true); }
   showTab(store.get("aos_tab", "chat"));
+  pollApprovals();
 }
 (async () => {
   try { await api("/auth/check"); start(); } catch { showLogin(); }

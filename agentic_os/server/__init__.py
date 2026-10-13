@@ -10,7 +10,8 @@ GET      /health                           liveness probe
 GET      /status                           OS summary
 GET      /metrics                          counters and latency percentiles
 GET      /agents                           registered agents
-POST     /agents                           spawn ``{name, instructions?, tools?, tool_tags?, conversational?}``
+POST     /agents                           spawn ``{name, instructions?, tools?, tool_tags?, conversational?,
+                                           mode?, approval?, delegates?}``
 POST     /run                              ``{task, agent?, context?, async?}`` -> process
 GET      /processes                        process table
 GET      /processes/{pid}                  one process, with its result
@@ -35,6 +36,8 @@ GET/POST /skills, DELETE /skills/{name}    skills (``{name, description, instruc
 GET/POST /mods, DELETE /mods/{name}        custom HTTP tools
 GET/POST /mcp, DELETE /mcp/{name}          MCP servers; POST /mcp/{name}/reconnect
 POST     /memory/import?filename=&distill= raw export file (zip/json/txt, up to 60 MB) or JSON ``{text}``
+GET      /approvals                        tool calls waiting for the operator
+POST     /approvals/{id}                   ``{approve: bool}`` allow or deny a waiting tool call
 =======  ================================  =========================================
 
 Set ``AGENTIC_OS_API_KEY`` to require ``Authorization: Bearer <key>``. The
@@ -213,6 +216,8 @@ def make_handler(system: AgenticOS) -> type[BaseHTTPRequestHandler]:
                     return 200, {"servers": [c.status() for c in system.mcp.values()]}
                 if path == "/processes":
                     return 200, {"processes": system.ps()}
+                if path == "/approvals":
+                    return 200, {"approvals": system.pending_approvals()}
                 if m := re.fullmatch(r"/processes/(\w+)", path):
                     return 200, system.process(m.group(1)).to_dict()
                 if m := re.fullmatch(r"/traces/(\w+)", path):
@@ -342,8 +347,18 @@ def make_handler(system: AgenticOS) -> type[BaseHTTPRequestHandler]:
                 if body.get("provider") and body["provider"] != "default":
                     kwargs["provider"] = str(body["provider"])
                     kwargs["model"] = str(body.get("model") or "") or None
+                kwargs["mode"] = str(body.get("mode") or "standard")
+                kwargs["approval"] = bool(body.get("approval", False))
+                if isinstance(body.get("delegates"), list):
+                    kwargs["delegates"] = [str(d) for d in body["delegates"]]
                 agent = system.spawn(name, **kwargs)
                 return 201, system.describe(agent.name)
+            if m := re.fullmatch(r"/approvals/(\w+)", path):
+                approve = body.get("approve")
+                if not isinstance(approve, bool):
+                    raise HTTPError(400, "'approve' must be true or false")
+                system.decide_approval(m.group(1), approve)
+                return 200, {"ok": True}
             if m := re.fullmatch(r"/processes/(\w+)/feedback", path):
                 reward = body.get("reward")
                 if not isinstance(reward, (int, float)) or not -1 <= reward <= 1:

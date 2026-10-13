@@ -90,7 +90,7 @@ Android as an app (PWA). It needs `AGENTIC_OS_API_KEY` as its password.
 | Tab | What you can do |
 |---|---|
 | 💬 Czat | Multi-turn chat with any agent; see the tools it used and its sources; 👍/👎 feedback |
-| 🤖 Agenci | Create agents (instructions, model, tools, skills), connect external agents (OpenAI-compatible such as Hermes/Grok/OpenClaw, A2A, webhook), run crews |
+| 🤖 Agenci | Create agents (instructions, model, tools, skills, thinking mode, delegation, tool approval), connect external agents (OpenAI-compatible such as Hermes/Grok/OpenClaw, A2A, webhook), run crews |
 | 📋 Zadania | Every run as a process with status and result |
 | 🧠 Mózg | Knowledge graph of documents, facts, episodes and lessons; **import memory** from ChatGPT, Claude, Gemini (Takeout), Grok, DeepSeek, Mistral exports, or a pasted memory list |
 | 📚 Wiedza | Add documents to the knowledge base (RAG) |
@@ -120,6 +120,18 @@ delegates via tools, a `router` (trained classifier or LLM), and `plan`
 **Self-improvement**: `AdaptiveAgent` treats prompt strategies as bandit
 arms and learns from rewards (automatic or human). `ReflectiveAgent` grades,
 critiques and retries, and stores lessons in long-term memory for future runs.
+
+All of this is available from the kernel and the War Room, not only in code:
+`spawn(name, mode="reflective" | "adaptive", approval=True, delegates=[...])`.
+
+* `mode="reflective"`: every chat or task answer is graded, critiqued and retried. Only the best attempt is
+  kept in the conversation, and the critiques are stored as lessons.
+* `mode="adaptive"`: each run picks a prompt strategy (concise, step by step, expert) with an epsilon-greedy
+  bandit. 👍/👎 in the chat updates it, and the stats persist in `bandits.json`.
+* `approval=True`: every tool call waits until the operator taps *Zezwól* or *Odmów* in the War Room
+  (`GET /approvals`, `POST /approvals/{id}`). Unanswered calls are denied after 5 minutes.
+* `delegates=[...]`: gives the agent `ask_<agent>` tools to hand off sub-tasks. Delegation is limited to 3
+  levels so agents that call each other cannot loop forever.
 
 ## HTTP API
 

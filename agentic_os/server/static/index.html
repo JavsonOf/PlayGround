@@ -43,6 +43,8 @@
       <button data-tab="monitor" class="tab">📊<span>Monitoring</span></button>
     </nav>
 
+    <div id="approvals" class="approvals hidden" aria-live="assertive"></div>
+
     <main>
       <!-- CZAT -->
       <section id="tab-chat" class="panel active chat-panel">
@@ -73,7 +75,16 @@
             </div>
             <fieldset class="field"><legend>Narzędzia</legend><div id="agent-tools" class="chips"></div></fieldset>
             <fieldset class="field"><legend>Skille (umiejętności)</legend><div id="agent-skills" class="chips"></div></fieldset>
+            <label class="field"><span>Tryb myślenia</span>
+              <select name="mode">
+                <option value="standard">Standardowy</option>
+                <option value="reflective">🔁 Refleksyjny: sam ocenia odpowiedź, krytykuje i poprawia</option>
+                <option value="adaptive">🎯 Adaptacyjny: uczy się z 👍/👎, który styl działa najlepiej</option>
+              </select>
+            </label>
+            <fieldset class="field"><legend>Może zlecać zadania agentom</legend><div id="agent-delegates" class="chips"></div></fieldset>
             <label class="check"><input type="checkbox" name="conversational"> Pamięta rozmowę (czat)</label>
+            <label class="check"><input type="checkbox" name="approval"> ✋ Pytaj mnie o zgodę przed każdym użyciem narzędzia</label>
             <button class="btn primary" type="submit">Utwórz agenta</button>
           </form>
         </details>
