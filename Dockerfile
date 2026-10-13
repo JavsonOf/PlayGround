@@ -3,7 +3,7 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY agentic_os ./agentic_os
-RUN pip install --no-cache-dir ".[anthropic]" && useradd --create-home agent
+RUN pip install --no-cache-dir ".[anthropic,gemini]" && useradd --create-home agent
 USER agent
 
 ENV AGENTIC_OS_DATA_DIR=/home/agent/data
