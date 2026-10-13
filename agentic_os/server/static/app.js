@@ -40,7 +40,8 @@ function richText(text) {
   return frag;
 }
 const fmtTime = (ts) => ts ? new Date(ts * 1000).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" }) : "";
-const statusTag = (s) => el("span", { class: "tag " + ({ completed: "ok", failed: "err", running: "run", queued: "run", waiting: "warn" }[s] || ""), text: ({ completed: "gotowe", failed: "błąd", running: "w toku", queued: "w kolejce", waiting: "czeka na zgodę" }[s] || s) });
+const statusTag = (s) => el("span", { class: "tag " + ({ completed: "ok", failed: "err", running: "run", queued: "run", waiting: "warn" }[s] || ""), text: ({ completed: "gotowe", failed: "błąd", running: "w toku", queued: "w kolejce", waiting: "czeka na Ciebie" }[s] || s) });
+const PERMISSIONS = { ask: "✋ zawsze pyta", smart: "🧠 sam decyduje, kiedy pytać", auto: "🚀 autonomiczny", full: "🔓 pełny dostęp" };
 const MODES = { standard: "", reflective: "🔁 refleksyjny", adaptive: "🎯 adaptacyjny" };
 const STRATEGIES = { zero_shot: "zwięzły", chain_of_thought: "krok po kroku", role: "ekspert" };
 
@@ -206,8 +207,14 @@ async function loadAgents() {
   }
 }
 function agentTraits(a) {
-  const t = [MODES[a.mode], a.approval ? "✋ pyta o zgodę" : "", a.delegates && a.delegates.length ? "📨 zleca: " + a.delegates.join(", ") : ""].filter(Boolean);
-  return t.length ? el("p", { class: "small", text: t.join(" · ") }) : null;
+  if (a.kind === "external") return null;
+  const t = [PERMISSIONS[a.permission] || "", MODES[a.mode], a.delegates && a.delegates.length ? "📨 zleca: " + a.delegates.join(", ") : ""].filter(Boolean);
+  return el("div", {},
+    t.length ? el("p", { class: "small", text: t.join(" · ") }) : null,
+    a.always_allow && a.always_allow.length ? el("p", { class: "small" }, `✅ Zawsze dozwolone: ${a.always_allow.join(", ")} `,
+      el("button", { class: "btn small ghost", type: "button", text: "Resetuj", onclick: async () => {
+        try { await api(`/agents/${a.name}/allowed`, { method: "DELETE" }); toast("Zgody zresetowane"); loadAgents(); } catch (err) { toast(err.message, true); }
+      } })) : null);
 }
 $("#ext-preset").addEventListener("change", (e) => {
   const p = state.extPresets[Number(e.target.value)]; const f = $("#ext-form");
@@ -217,7 +224,8 @@ $("#ext-preset").addEventListener("change", (e) => {
 $("#agent-form").addEventListener("submit", withBusy($("#agent-form"), async (fd) => {
   const body = { name: fd.get("name"), instructions: fd.get("instructions") || undefined, provider: fd.get("provider"),
     model: fd.get("model") || undefined, tools: fd.getAll("tools"), skills: fd.getAll("skills"), conversational: fd.get("conversational") === "on",
-    mode: fd.get("mode"), approval: fd.get("approval") === "on", delegates: fd.getAll("delegates") };
+    mode: fd.get("mode"), permission: fd.get("permission") || "auto", delegates: fd.getAll("delegates") };
+  if (body.permission === "full" && !confirm("Pełny dostęp: agent użyje każdego narzędzia, serwera MCP, moda i agenta bez pytania. Kontynuować?")) return;
   await api("/agents", { method: "POST", body }); toast("Agent utworzony ✅"); $("#agent-form").reset(); loadAgents();
 }));
 $("#ext-form").addEventListener("submit", withBusy($("#ext-form"), async (fd) => {
@@ -427,16 +435,37 @@ async function pollApprovals() {
 }
 function renderApprovals(list) {
   const box = $("#approvals");
+  const key = list.map((a) => a.id).join(",");
+  if (key === state.approvalKey) return; // keep a half-typed answer intact between polls
+  state.approvalKey = key;
   box.classList.toggle("hidden", !list.length);
-  box.replaceChildren(...list.map((a) => el("div", { class: "approval" },
+  box.replaceChildren(...list.map((a) => a.kind === "question" ? questionCard(a) : el("div", { class: "approval" },
     el("div", { class: "small" }, el("strong", { text: `✋ ${a.agent}` }), ` chce użyć narzędzia `, el("code", { text: a.tool })),
     el("pre", { text: JSON.stringify(a.arguments, null, 2) }),
     el("div", { class: "actions" },
-      el("button", { class: "btn primary", type: "button", text: "✅ Zezwól", onclick: () => decide(a.id, true) }),
-      el("button", { class: "btn ghost danger", type: "button", text: "⛔ Odmów", onclick: () => decide(a.id, false) })))));
+      el("button", { class: "btn primary", type: "button", text: "✅ Zezwól", onclick: () => decide(a.id, { approve: true }) }),
+      el("button", { class: "btn", type: "button", text: "Zawsze", title: "Zezwalaj temu agentowi na to narzędzie bez pytania", onclick: () => decide(a.id, { approve: true, remember: true }) }),
+      el("button", { class: "btn ghost danger", type: "button", text: "⛔ Odmów", onclick: () => decide(a.id, { approve: false }) })))));
 }
-async function decide(id, approve) {
-  try { await api(`/approvals/${id}`, { method: "POST", body: { approve } }); toast(approve ? "Zezwolono" : "Odmówiono"); } catch (err) { toast(err.message, true); }
+function questionCard(a) {
+  const input = el("textarea", { placeholder: "Twoja odpowiedź…", "aria-label": "Odpowiedź dla agenta" });
+  return el("div", { class: "approval" },
+    el("div", { class: "small" }, el("strong", { text: `❓ ${a.agent}` }), " pyta:"),
+    el("p", { class: "question", text: a.arguments.question || "" }),
+    input,
+    el("div", { class: "actions" },
+      el("button", { class: "btn primary", type: "button", text: "Odpowiedz", onclick: () => {
+        if (!input.value.trim()) { toast("Wpisz odpowiedź albo pomiń", true); return; }
+        decide(a.id, { answer: input.value.trim() });
+      } }),
+      el("button", { class: "btn ghost", type: "button", text: "Pomiń (niech zdecyduje)", onclick: () => decide(a.id, { answer: "" }) })));
+}
+async function decide(id, body) {
+  try {
+    await api(`/approvals/${id}`, { method: "POST", body });
+    toast(body.answer !== undefined ? (body.answer ? "Odpowiedź wysłana" : "Agent zdecyduje sam") : body.approve ? (body.remember ? "Zezwolono na stałe" : "Zezwolono") : "Odmówiono");
+  } catch (err) { toast(err.message, true); }
+  state.approvalKey = null;
   pollApprovals();
 }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") pollApprovals(); });

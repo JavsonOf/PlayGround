@@ -86,7 +86,7 @@ def test_delegation_depth_is_limited(tmp_path):
 
 def _approval_os(tmp_path):
     system = make_os(tmp_path, [call("calculator", expression="2+2"), "The result is 4."])
-    system.spawn("careful", approval=True)
+    system.spawn("careful", permission="ask")
     return system
 
 
@@ -129,8 +129,11 @@ def test_http_api_for_modes_and_approvals(tmp_path):
             return exc.code, json.loads(exc.read())
 
     try:
-        status, agent = req("POST", "/agents", {"name": "smart", "mode": "reflective", "approval": True, "delegates": ["careful"]})
-        assert status == 201 and agent["mode"] == "reflective" and agent["approval"] and agent["delegates"] == ["careful"]
+        status, agent = req("POST", "/agents", {"name": "smart", "mode": "reflective", "permission": "smart", "delegates": ["careful"]})
+        assert status == 201 and agent["mode"] == "reflective" and agent["permission"] == "smart"
+        assert agent["delegates"] == ["careful"] and "ask_user" in agent["tools"]
+        assert req("POST", "/agents", {"name": "legacy", "approval": True})[1]["permission"] == "ask"
+        assert req("POST", "/agents", {"name": "bad2", "permission": "root"})[0] == 400
         assert req("POST", "/agents", {"name": "bad", "mode": "psychic"})[0] == 400
         status, proc = req("POST", "/chat", {"message": "2+2?", "agent": "careful"})
         pending = _wait_for_approval(system)
@@ -142,3 +145,68 @@ def test_http_api_for_modes_and_approvals(tmp_path):
     finally:
         server.shutdown()
         system.shutdown()
+
+
+def test_smart_permission_runs_read_only_tools_and_asks_for_changes(tmp_path):
+    system = make_os(tmp_path, [call("calculator", expression="2+2"), call("remember_fact", fact="likes tea"), "Done."])
+    system.spawn("smart", permission="smart")
+    proc = system.submit("Compute and remember", agent="smart")
+    pending = _wait_for_approval(system)
+    assert pending["tool"] == "remember_fact"  # the calculator ran without asking
+    system.decide_approval(pending["id"], True)
+    system.wait(proc.pid, timeout=5)
+    calls = system.process(proc.pid).result["tool_calls"]
+    assert [c["is_error"] for c in calls] == [False, False]
+
+
+@pytest.mark.parametrize("answer, expected", [("Blue", "The user answered: Blue"), ("", "did not answer")])
+def test_agent_can_ask_the_user_a_question(tmp_path, answer, expected):
+    system = make_os(tmp_path, [call("ask_user", question="Which colour?"), "OK"])
+    system.spawn("curious", permission="smart")
+    proc = system.submit("Paint it", agent="curious")
+    pending = _wait_for_approval(system)
+    assert pending["kind"] == "question" and pending["arguments"]["question"] == "Which colour?"
+    system.decide_approval(pending["id"], answer=answer)
+    system.wait(proc.pid, timeout=5)
+    assert expected in system.process(proc.pid).result["tool_calls"][0]["result"]
+
+
+def test_autonomous_agent_never_waits_and_has_no_ask_user(tmp_path):
+    system = make_os(tmp_path, [call("remember_fact", fact="x"), "Done."])
+    agent = system.spawn("auto")
+    assert agent.permission == "auto" and agent.approve_tool is None and "ask_user" not in agent.tools
+    assert system.run("go", agent="auto").result["tool_calls"][0]["is_error"] is False
+
+
+def test_full_access_sees_every_tool_and_agent(tmp_path):
+    system = make_os(tmp_path, [])
+    system.spawn("helper", tools=[])
+    root = system.spawn("root", tools=["calculator"], permission="full")
+    system.spawn("late", tools=[])  # created afterwards: still reachable
+    names = root.tools.names()
+    assert {"calculator", "remember_fact", "search_knowledge", "ask_helper", "ask_late", "ask_assistant"} <= set(names)
+    assert "ask_root" not in names and "ask_user" not in names
+    assert root.approve_tool is None and root.max_steps >= 25
+
+
+def test_always_allow_is_remembered_and_can_be_reset(tmp_path):
+    system = make_os(tmp_path, [call("calculator", expression="1+1"), "two", call("calculator", expression="1+1"), "two"])
+    system.spawn("careful", permission="ask")
+    proc = system.submit("1+1", agent="careful")
+    system.decide_approval(_wait_for_approval(system)["id"], True, remember=True)
+    system.wait(proc.pid, timeout=5)
+    assert system.run("again", agent="careful").result["tool_calls"][0]["is_error"] is False  # no prompt
+    assert make_os(tmp_path, []).describe("careful")["always_allow"] == ["calculator"]
+    system.reset_always_allow("careful")
+    assert make_os(tmp_path, []).describe("careful")["always_allow"] == []
+
+
+def test_old_approval_flag_in_saved_specs_maps_to_ask(tmp_path):
+    (tmp_path / "agents.json").write_text(json.dumps([{"type": "native", "name": "old", "approval": True}]))
+    assert make_os(tmp_path, []).describe("old")["permission"] == "ask"
+
+
+def test_read_only_classification():
+    from agentic_os.mods import mod_from_dict
+    assert AgenticOS.is_read_only(mod_from_dict({"name": "w", "url": "https://x.test", "method": "GET"}).to_tool())
+    assert not AgenticOS.is_read_only(mod_from_dict({"name": "w", "url": "https://x.test", "method": "POST"}).to_tool())

@@ -179,3 +179,12 @@ pre.out { white-space: pre-wrap; word-break: break-word; background: var(--surfa
 .approval .actions { display: flex; gap: 8px; }
 .approval .btn { min-height: 44px; flex: 1; }
 .tag.warn { color: var(--warn); border-color: var(--warn); }
+.choices { display: flex; flex-direction: column; gap: 8px; }
+.choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); cursor: pointer; min-height: 44px; }
+.choice input { flex: none; width: 20px; height: 20px; min-height: 0; padding: 0; margin: 2px 0 0; accent-color: var(--accent); }
+.choice span { display: flex; flex-direction: column; gap: 2px; }
+.choice small { color: var(--muted); font-size: 12.5px; line-height: 1.35; }
+.choice:has(input:checked) { border-color: var(--accent); }
+.choice.danger:has(input:checked) { border-color: var(--err); }
+.approval textarea { width: 100%; min-height: 64px; font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+.approval .question { white-space: pre-wrap; margin: 0; }

@@ -130,4 +130,4 @@ class RAGPipeline:
             context, _ = self.build_context(query, k=k)
             return context or "No relevant documents found."
 
-        return make_tool(search_knowledge, tags=["knowledge", "core"])
+        return make_tool(search_knowledge, tags=["knowledge", "core", "readonly"])

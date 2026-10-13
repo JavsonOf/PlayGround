@@ -251,10 +251,12 @@ class MCPClient:
             local = re.sub(r"[^a-zA-Z0-9_-]", "_", f"mcp_{self.config.name}_{remote}")[:64]
             schema = spec.get("inputSchema") or {"type": "object", "properties": {}}
             schema.setdefault("type", "object")
+            read_only = bool((spec.get("annotations") or {}).get("readOnlyHint"))  # the server's own hint
             out.append(Tool(
                 name=local,
                 description=(spec.get("description") or f"{remote} (MCP server {self.config.name})")[:1024],
-                parameters=schema, func=_McpToolFunc(self, remote), tags={"mcp", f"mcp:{self.config.name}"},
+                parameters=schema, func=_McpToolFunc(self, remote),
+                tags={"mcp", f"mcp:{self.config.name}"} | ({"readonly"} if read_only else set()),
             ))
         return out
 

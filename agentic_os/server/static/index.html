@@ -84,7 +84,14 @@
             </label>
             <fieldset class="field"><legend>Może zlecać zadania agentom</legend><div id="agent-delegates" class="chips"></div></fieldset>
             <label class="check"><input type="checkbox" name="conversational"> Pamięta rozmowę (czat)</label>
-            <label class="check"><input type="checkbox" name="approval"> ✋ Pytaj mnie o zgodę przed każdym użyciem narzędzia</label>
+            <fieldset class="field"><legend>Uprawnienia (ile agent może zrobić bez Ciebie)</legend>
+              <div class="choices">
+                <label class="choice"><input type="radio" name="permission" value="ask"><span><b>✋ Zawsze pytaj</b><small>Każde użycie narzędzia czeka na Twoją zgodę.</small></span></label>
+                <label class="choice"><input type="radio" name="permission" value="smart"><span><b>🧠 Agent decyduje, kiedy zapytać</b><small>Bezpieczne rzeczy (czytanie, liczenie, szukanie) robi sam. O zmiany prosi o zgodę i może zadać Ci pytanie.</small></span></label>
+                <label class="choice"><input type="radio" name="permission" value="auto" checked><span><b>🚀 Autonomiczny</b><small>Sam podejmuje decyzje w ramach wybranych narzędzi, nie czeka na Ciebie.</small></span></label>
+                <label class="choice danger"><input type="radio" name="permission" value="full"><span><b>🔓 Pełny dostęp</b><small>Wszystkie narzędzia, MCP, mody i agenci w systemie, bez pytania. Tylko dla zaufanych zadań.</small></span></label>
+              </div>
+            </fieldset>
             <button class="btn primary" type="submit">Utwórz agenta</button>
           </form>
         </details>

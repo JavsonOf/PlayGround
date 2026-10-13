@@ -122,14 +122,25 @@ arms and learns from rewards (automatic or human). `ReflectiveAgent` grades,
 critiques and retries, and stores lessons in long-term memory for future runs.
 
 All of this is available from the kernel and the War Room, not only in code:
-`spawn(name, mode="reflective" | "adaptive", approval=True, delegates=[...])`.
+`spawn(name, mode="reflective" | "adaptive", permission="ask" | "smart" | "auto" | "full", delegates=[...])`.
 
 * `mode="reflective"`: every chat or task answer is graded, critiqued and retried. Only the best attempt is
   kept in the conversation, and the critiques are stored as lessons.
 * `mode="adaptive"`: each run picks a prompt strategy (concise, step by step, expert) with an epsilon-greedy
   bandit. 👍/👎 in the chat updates it, and the stats persist in `bandits.json`.
-* `approval=True`: every tool call waits until the operator taps *Zezwól* or *Odmów* in the War Room
-  (`GET /approvals`, `POST /approvals/{id}`). Unanswered calls are denied after 5 minutes.
+* `permission` sets how much the agent may do on its own:
+  * `ask`: every tool call waits until the operator taps *Zezwól*, *Zawsze* (always allow this tool for
+    this agent) or *Odmów* in the War Room (`GET /approvals`, `POST /approvals/{id}`).
+  * `smart`: read-only tools run freely. Tools tagged `readonly` include the built-ins, knowledge search,
+    memory recall, `GET` mods and MCP tools whose server sets `readOnlyHint`. Anything that changes
+    something waits for approval, and the agent gets an `ask_user` tool to ask the user a question when it
+    judges a decision ambiguous, irreversible or a matter of preference.
+  * `auto` (default): autonomous within its selected tools, never waits for the user.
+  * `full`: every tool, MCP server, mod and agent in the system (including ones added later), with no
+    confirmations and a higher step limit.
+
+  Approvals and questions that nobody answers time out after 5 minutes: the tool call is denied and the
+  question is left for the agent to decide.
 * `delegates=[...]`: gives the agent `ask_<agent>` tools to hand off sub-tasks. Delegation is limited to 3
   levels so agents that call each other cannot loop forever.
 
