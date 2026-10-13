@@ -21,8 +21,8 @@ thing as a small, dependency-free agent framework running on Claude.
 ## Quick start
 
 ```bash
-pip install -e ".[anthropic]"          # core has zero dependencies; [anthropic] adds Claude
-export ANTHROPIC_API_KEY=...           # optional: without it everything runs offline
+pip install -e ".[anthropic,gemini]"   # core has zero dependencies; extras add Claude / Gemini
+export ANTHROPIC_API_KEY=...           # or GEMINI_API_KEY=...; without a key everything runs offline
 
 agentic-os roadmap                     # how the 12 stages map to modules
 agentic-os run "What is 1234 * 5678?"
@@ -53,9 +53,12 @@ with AgenticOS() as system:
 
 **Provider selection.** `AGENTIC_OS_PROVIDER=auto` (the default) uses Claude
 when the `anthropic` package and an `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`
-are present, and otherwise uses an offline heuristic model, so the examples
-and tests run anywhere. To force a provider, set `AGENTIC_OS_PROVIDER=anthropic`
-(for example with an `ant auth login` profile) or `=mock`. The default model is
+are present, then Gemini when `google-genai` and a `GEMINI_API_KEY` are present,
+and otherwise an offline heuristic model, so the examples and tests run anywhere.
+To force a provider, set `AGENTIC_OS_PROVIDER=anthropic` (for example with an
+`ant auth login` profile), `=gemini` (default model `gemini-flash-latest`) or
+`=mock`. Anthropic-compatible gateways such as OpenRouter work through the
+`anthropic` provider with `ANTHROPIC_BASE_URL`. The default model is
 `claude-opus-5-5`, with `effort=high` and server-side refusal fallbacks on.
 See [`agentic_os/config.py`](agentic_os/config.py) for every setting.
 
@@ -66,7 +69,7 @@ See [`agentic_os/config.py`](agentic_os/config.py) for every setting.
 | 1 | Introduction to Agentic AI | `agents/base.py`, `kernel.py` | The autonomous perceive→decide→act loop; agents as OS processes |
 | 2 | Fundamentals of AI & ML | `learning/ml.py`, `memory/embeddings.py` | Softmax regression trained by gradient descent (powers `IntentRouter`); feature-hashing embeddings |
 | 3 | Programming & AI Frameworks | `tools/` | `@tool` turns Python functions into JSON-Schema tools; validated, sandboxed execution |
-| 4 | Large Language Models | `llm/` | Provider interface, Claude via the Anthropic SDK, token estimates and context budgets |
+| 4 | Large Language Models | `llm/` | Provider interface, Claude (Anthropic SDK) and Gemini (Google Gen AI SDK), token estimates and context budgets |
 | 5 | Understanding AI Agents | `agents/` | Reactive (`ReflexAgent`) vs. goal-oriented (`GoalAgent`) agents, ReAct tool loop, multi-agent `Crew` |
 | 6 | AI Memory & Knowledge Retrieval | `memory/` | Short-term `ConversationBuffer`, long-term `LongTermMemory`, `VectorStore`, chunking |
 | 7 | Decision-Making & Planning | `planning/`, `agents/goal.py` | LLM goal decomposition into a task DAG, topological execution, failure propagation |

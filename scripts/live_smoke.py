@@ -1,10 +1,15 @@
-"""Live smoke test against the real Claude API.
+"""Live smoke test against a real model.
 
 Exercises each major layer once with the real model and reports PASS/FAIL per
-check. Needs ANTHROPIC_API_KEY, or an Anthropic-compatible gateway such as
-OpenRouter (ANTHROPIC_BASE_URL=https://openrouter.ai/api, ANTHROPIC_AUTH_TOKEN,
-AGENTIC_OS_MODEL=anthropic/claude-opus-5.5 or openrouter/free,
-AGENTIC_OS_FALLBACKS=false, AGENTIC_OS_EFFORT= to omit effort).
+check. Provider is chosen with AGENTIC_OS_PROVIDER (anthropic | gemini):
+
+* anthropic: ANTHROPIC_API_KEY, or an Anthropic-compatible gateway such as
+  OpenRouter (ANTHROPIC_BASE_URL=https://openrouter.ai/api, ANTHROPIC_AUTH_TOKEN,
+  AGENTIC_OS_MODEL=anthropic/claude-opus-5.5 or openrouter/free,
+  AGENTIC_OS_FALLBACKS=false, AGENTIC_OS_EFFORT= to omit effort).
+* gemini: GEMINI_API_KEY, AGENTIC_OS_MODEL=gemini-flash-latest (default) or
+  another model served by the Gemini API.
+
 Run: python scripts/live_smoke.py
 """
 
@@ -17,30 +22,36 @@ import sys
 import time
 import traceback
 
-from agentic_os import Agent, AgenticOS, ConversationBuffer, RAGPipeline, Settings
+from agentic_os import Agent, AgenticOS, ConversationBuffer, LLMProvider, RAGPipeline, Settings
 from agentic_os.agents import Crew, GoalAgent
 from agentic_os.learning import LLMJudge
-from agentic_os.llm.anthropic_provider import AnthropicProvider
+from agentic_os.llm import create_llm
 from agentic_os.tools import calculator
 
-MODEL = os.environ.get("AGENTIC_OS_MODEL", "claude-opus-5-5")
+PROVIDER = os.environ.get("AGENTIC_OS_PROVIDER", "anthropic")
+MODEL = os.environ.get("AGENTIC_OS_MODEL", "claude-opus-5-5" if PROVIDER == "anthropic" else "gemini-flash-latest")
 EFFORT = os.environ.get("AGENTIC_OS_EFFORT", "low")
-FALLBACKS = Settings().fallbacks
+SETTINGS = Settings(provider=PROVIDER, model=MODEL, effort=EFFORT)
 
 SERVED: set[str] = set()
 
 
-class RecordingProvider(AnthropicProvider):
-    """Remembers which models actually served requests (routers like openrouter/free vary)."""
+class RecordingProvider(LLMProvider):
+    """Wraps a provider and remembers which models actually served requests (routers vary)."""
+
+    def __init__(self, inner: LLMProvider) -> None:
+        self.inner = inner
+        self.name = inner.name
+        self.model = getattr(inner, "model", None)
 
     def complete(self, *args, **kwargs):
-        response = super().complete(*args, **kwargs)
+        response = self.inner.complete(*args, **kwargs)
         if response.model:
             SERVED.add(response.model)
         return response
 
 
-llm = RecordingProvider(MODEL, effort=EFFORT or None, fallbacks=FALLBACKS)
+llm = RecordingProvider(create_llm(SETTINGS))
 results: list[tuple[str, bool, str]] = []
 usage = {"input_tokens": 0, "output_tokens": 0}
 
@@ -134,7 +145,7 @@ def _():
 
 @check("kernel: AgenticOS process end-to-end")
 def _():
-    with AgenticOS(Settings(provider="anthropic", model=MODEL, effort=EFFORT), llm=llm) as system:
+    with AgenticOS(SETTINGS, llm=llm) as system:
         system.ingest("Agentic OS assigns every agent run a process id (PID).", source="os.md")
         proc = system.run("According to the knowledge base, what does Agentic OS assign every agent run?")
         assert proc.status == "completed", proc.error
@@ -143,5 +154,5 @@ def _():
 
 
 passed = sum(ok for _, ok, _ in results)
-print("\n" + json.dumps({"model": MODEL, "effort": EFFORT, "fallbacks": FALLBACKS, "served_by": sorted(SERVED), "passed": passed, "total": len(results), "usage_tracked": usage}))
+print("\n" + json.dumps({"provider": PROVIDER, "model": MODEL, "effort": EFFORT, "fallbacks": SETTINGS.fallbacks, "served_by": sorted(SERVED), "passed": passed, "total": len(results), "usage_tracked": usage}))
 sys.exit(0 if passed == len(results) else 1)
