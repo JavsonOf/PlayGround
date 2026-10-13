@@ -42,6 +42,36 @@ function richText(text) {
 const fmtTime = (ts) => ts ? new Date(ts * 1000).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" }) : "";
 const statusTag = (s) => el("span", { class: "tag " + ({ completed: "ok", failed: "err", running: "run", queued: "run", waiting: "warn" }[s] || ""), text: ({ completed: "gotowe", failed: "błąd", running: "w toku", queued: "w kolejce", waiting: "czeka na Ciebie" }[s] || s) });
 const PERMISSIONS = { ask: "✋ zawsze pyta", smart: "🧠 sam decyduje, kiedy pytać", auto: "🚀 autonomiczny", full: "🔓 pełny dostęp" };
+const PERMISSION_OPTIONS = [["ask", "✋ Zawsze pytaj"], ["smart", "🧠 Sam decyduje, kiedy pytać"], ["auto", "🚀 Autonomiczny"], ["full", "🔓 Pełny dostęp"]];
+const MODE_OPTIONS = [["standard", "Standardowy"], ["reflective", "🔁 Refleksyjny"], ["adaptive", "🎯 Adaptacyjny"]];
+const options = (list, current) => list.map(([v, t]) => el("option", { value: v, text: t, selected: v === current }));
+/* Change an agent's permission or thinking mode at any time (applies immediately, even to a running task). */
+async function changeAgent(name, changes, select) {
+  const before = state.agents.find((a) => a.name === name) || {};
+  if (changes.permission === "full" && before.permission !== "full" &&
+      !confirm(`Pełny dostęp: ${name} użyje każdego narzędzia, serwera MCP, moda i agenta bez pytania. Kontynuować?`)) {
+    if (select) select.value = before.permission || "auto";
+    return;
+  }
+  try {
+    const updated = await api(`/agents/${name}/settings`, { method: "POST", body: changes });
+    Object.assign(before, updated);
+    toast(`${name}: ${changes.permission ? PERMISSIONS[updated.permission] : MODES[updated.mode] || "standardowy"}`);
+    syncChatPermission();
+    if (state.tab === "agents") loadAgents();
+  } catch (err) {
+    toast(err.message, true);
+    if (select) select.value = changes.permission ? before.permission : before.mode;
+  }
+}
+function syncChatPermission() {
+  const sel = $("#chat-permission");
+  const a = state.agents.find((x) => x.name === $("#chat-agent").value);
+  const native = a && a.kind !== "external";
+  sel.closest("label").classList.toggle("hidden", !native);
+  if (native) sel.replaceChildren(...options(PERMISSION_OPTIONS, a.permission));
+}
+$("#chat-permission").addEventListener("change", (e) => changeAgent($("#chat-agent").value, { permission: e.target.value }, e.target));
 const MODES = { standard: "", reflective: "🔁 refleksyjny", adaptive: "🎯 adaptacyjny" };
 const STRATEGIES = { zero_shot: "zwięzły", chain_of_thought: "krok po kroku", role: "ekspert" };
 
@@ -105,6 +135,7 @@ async function refreshAgents() {
   const sel = $("#chat-agent"); const current = sel.value || store.get("aos_chat_agent", "assistant");
   sel.replaceChildren(...state.agents.map((a) => el("option", { value: a.name, text: `${a.name}${a.kind === "external" ? " (zewn.)" : ""}` })));
   sel.value = state.agents.some((a) => a.name === current) ? current : "assistant";
+  syncChatPermission();
 }
 async function refreshProviders() {
   const data = await api("/providers");
@@ -169,7 +200,7 @@ $("#chat-form").addEventListener("submit", async (e) => {
 });
 $("#chat-text").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && window.innerWidth > 900) { e.preventDefault(); $("#chat-form").requestSubmit(); } });
 $("#chat-text").addEventListener("input", (e) => { e.target.style.height = ""; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; });
-$("#chat-agent").addEventListener("change", (e) => { store.set("aos_chat_agent", e.target.value); chatEmpty(); });
+$("#chat-agent").addEventListener("change", (e) => { store.set("aos_chat_agent", e.target.value); syncChatPermission(); chatEmpty(); });
 $("#chat-reset").addEventListener("click", async () => {
   const agent = $("#chat-agent").value;
   try { await api("/chat/reset", { method: "POST", body: { agent, session: sessionId(agent) } }); } catch { /* ignore */ }
@@ -208,9 +239,13 @@ async function loadAgents() {
 }
 function agentTraits(a) {
   if (a.kind === "external") return null;
-  const t = [PERMISSIONS[a.permission] || "", MODES[a.mode], a.delegates && a.delegates.length ? "📨 zleca: " + a.delegates.join(", ") : ""].filter(Boolean);
+  const perm = el("select", { "aria-label": `Uprawnienia ${a.name}`, onchange: (e) => changeAgent(a.name, { permission: e.target.value }, e.target) }, ...options(PERMISSION_OPTIONS, a.permission));
+  const mode = el("select", { "aria-label": `Tryb myślenia ${a.name}`, onchange: (e) => changeAgent(a.name, { mode: e.target.value }, e.target) }, ...options(MODE_OPTIONS, a.mode));
   return el("div", {},
-    t.length ? el("p", { class: "small", text: t.join(" · ") }) : null,
+    el("div", { class: "agent-settings" },
+      el("label", { class: "field" }, el("span", { text: "Uprawnienia" }), perm),
+      el("label", { class: "field" }, el("span", { text: "Tryb myślenia" }), mode)),
+    a.delegates && a.delegates.length ? el("p", { class: "small", text: "📨 zleca: " + a.delegates.join(", ") }) : null,
     a.always_allow && a.always_allow.length ? el("p", { class: "small" }, `✅ Zawsze dozwolone: ${a.always_allow.join(", ")} `,
       el("button", { class: "btn small ghost", type: "button", text: "Resetuj", onclick: async () => {
         try { await api(`/agents/${a.name}/allowed`, { method: "DELETE" }); toast("Zgody zresetowane"); loadAgents(); } catch (err) { toast(err.message, true); }

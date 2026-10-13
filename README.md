@@ -141,6 +141,12 @@ All of this is available from the kernel and the War Room, not only in code:
 
   Approvals and questions that nobody answers time out after 5 minutes: the tool call is denied and the
   question is left for the agent to decide.
+
+  Permission and thinking mode can be changed at any time with `update_agent(name, permission=..., mode=...)`
+  (`POST /agents/{name}/settings`). In the War Room this is done from the agent card or the selector next to
+  the chat. The change applies immediately, even to a task that is already running. Switching to `auto` or
+  `full` lets any tool call that is waiting for approval through. Chat history, learned strategy stats and
+  "always allow" approvals are kept.
 * `delegates=[...]`: gives the agent `ask_<agent>` tools to hand off sub-tasks. Delegation is limited to 3
   levels so agents that call each other cannot loop forever.
 

@@ -188,3 +188,11 @@ pre.out { white-space: pre-wrap; word-break: break-word; background: var(--surfa
 .choice.danger:has(input:checked) { border-color: var(--err); }
 .approval textarea { width: 100%; min-height: 64px; font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
 .approval .question { white-space: pre-wrap; margin: 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.agent-settings { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
+.agent-settings .field span { font-size: 12px; }
+@media (max-width: 600px) {
+  .chat-head { display: grid; grid-template-columns: 1fr auto; }
+  .chat-head .field.inline:has(#chat-permission) { grid-column: 1 / -1; order: 3; }
+  #chat-permission { width: 100%; }
+}

@@ -424,7 +424,7 @@ class AgenticOS:
             max_steps=steps,
             tracer=self.tracer,
             metrics=self.metrics,
-            approve_tool=self._approval_hook(name, permission) if permission in ("ask", "smart") else None,
+            approve_tool=self._approval_hook(name),  # reads the agent's current permission on every call
         )
         agent.provider_id = provider
         agent.model_name = model or getattr(agent.llm, "model", None)
@@ -525,9 +525,13 @@ class AgenticOS:
             return True  # an unknown tool fails on its own without side effects
         return "readonly" in tool.tags or ("agent" in tool.tags and "external" not in tool.tags)
 
-    def _approval_hook(self, agent_name: str, permission: str) -> Callable[[ToolCall], bool]:
+    def _approval_hook(self, agent_name: str) -> Callable[[ToolCall], bool]:
         def hook(call: ToolCall) -> bool:
             agent = self.agents.get(agent_name)
+            # the permission is looked up live, so a change applies even to a task that is already running
+            permission = getattr(agent, "permission", "auto")
+            if permission in ("auto", "full"):
+                return True
             if call.name == "ask_user" or call.name in getattr(agent, "always_allow", ()):
                 return True
             if permission == "smart" and agent is not None:
@@ -587,6 +591,36 @@ class AgenticOS:
                     self._specs[item.agent]["always_allow"] = sorted(agent.always_allow)
                     self._save_specs()
         item._event.set()
+
+    def update_agent(self, name: str, *, permission: str | None = None, mode: str | None = None) -> Agent:
+        """Change an agent's permission level and/or thinking mode at any time.
+
+        The agent is rebuilt from its saved spec, so tools, delegation and
+        instructions follow the new setting; chat sessions, learned strategy
+        stats and "always allow" approvals are kept. Tool calls already
+        waiting for approval are allowed when switching to ``auto``/``full``.
+        """
+        agent = self.agent(name)
+        if not isinstance(agent, Agent):
+            raise ValueError("External agents have no permission or mode settings")  # noqa: TRY004 - maps to HTTP 400
+        spec = self._specs.get(name)
+        if spec is None:
+            raise ValueError(f"Agent {name!r} was created in code with a custom strategy and cannot be changed here")
+        spec = {k: v for k, v in spec.items() if k not in ("type", "name")}
+        if permission is not None:
+            spec["permission"] = permission
+        if mode is not None:
+            spec["mode"] = mode
+        spec["always_allow"] = sorted(getattr(agent, "always_allow", set()))
+        if name in self._bandits:
+            self._save_bandits()
+        updated = self.spawn(name, **spec)
+        if updated.permission in ("auto", "full"):
+            for item in list(self.approvals.values()):
+                if item.agent == name and item.kind == "tool":
+                    item.decision = True
+                    item._event.set()
+        return updated
 
     def reset_always_allow(self, name: str) -> None:
         """Forget the tools the operator approved permanently for an agent."""

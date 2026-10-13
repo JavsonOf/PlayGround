@@ -134,6 +134,10 @@ def test_http_api_for_modes_and_approvals(tmp_path):
         assert agent["delegates"] == ["careful"] and "ask_user" in agent["tools"]
         assert req("POST", "/agents", {"name": "legacy", "approval": True})[1]["permission"] == "ask"
         assert req("POST", "/agents", {"name": "bad2", "permission": "root"})[0] == 400
+        status, changed = req("POST", "/agents/smart/settings", {"permission": "full", "mode": "standard"})
+        assert status == 200 and (changed["permission"], changed["mode"]) == ("full", "standard")
+        assert req("POST", "/agents/smart/settings", {"permission": "root"})[0] == 400
+        assert req("POST", "/agents/ghost/settings", {"permission": "ask"})[0] == 404
         assert req("POST", "/agents", {"name": "bad", "mode": "psychic"})[0] == 400
         status, proc = req("POST", "/chat", {"message": "2+2?", "agent": "careful"})
         pending = _wait_for_approval(system)
@@ -174,7 +178,7 @@ def test_agent_can_ask_the_user_a_question(tmp_path, answer, expected):
 def test_autonomous_agent_never_waits_and_has_no_ask_user(tmp_path):
     system = make_os(tmp_path, [call("remember_fact", fact="x"), "Done."])
     agent = system.spawn("auto")
-    assert agent.permission == "auto" and agent.approve_tool is None and "ask_user" not in agent.tools
+    assert agent.permission == "auto" and "ask_user" not in agent.tools
     assert system.run("go", agent="auto").result["tool_calls"][0]["is_error"] is False
 
 
@@ -186,7 +190,7 @@ def test_full_access_sees_every_tool_and_agent(tmp_path):
     names = root.tools.names()
     assert {"calculator", "remember_fact", "search_knowledge", "ask_helper", "ask_late", "ask_assistant"} <= set(names)
     assert "ask_root" not in names and "ask_user" not in names
-    assert root.approve_tool is None and root.max_steps >= 25
+    assert root.max_steps >= 25
 
 
 def test_always_allow_is_remembered_and_can_be_reset(tmp_path):
@@ -210,3 +214,30 @@ def test_read_only_classification():
     from agentic_os.mods import mod_from_dict
     assert AgenticOS.is_read_only(mod_from_dict({"name": "w", "url": "https://x.test", "method": "GET"}).to_tool())
     assert not AgenticOS.is_read_only(mod_from_dict({"name": "w", "url": "https://x.test", "method": "POST"}).to_tool())
+
+
+def test_permission_and_mode_can_change_at_any_time(tmp_path):
+    system = make_os(tmp_path, [call("remember_fact", fact="x"), "Done.", call("remember_fact", fact="y"), "Done."])
+    system.spawn("flex", conversational=True)
+    system.chat("hello", agent="flex", wait=False)  # creates a session that must survive the change
+    flex = system.update_agent("flex", permission="ask", mode="adaptive")
+    assert (flex.permission, flex.mode) == ("ask", "adaptive") and "ask_user" in flex.tools
+    reloaded = make_os(tmp_path, [])
+    assert reloaded.describe("flex")["permission"] == "ask"  # persisted
+
+    flex = system.update_agent("flex", permission="full")
+    assert "ask_user" not in flex.tools and "ask_assistant" in flex.tools and flex.mode == "adaptive"
+    with pytest.raises(ValueError):
+        system.update_agent("flex", permission="root")
+
+
+def test_switching_to_full_releases_waiting_calls_and_running_tasks_follow_live(tmp_path):
+    system = make_os(tmp_path, [call("calculator", expression="1+1"), call("calculator", expression="2+2"), "Done."])
+    system.spawn("careful", permission="ask")
+    proc = system.submit("add twice", agent="careful")
+    _wait_for_approval(system)
+    system.update_agent("careful", permission="full")  # the waiting call is let through ...
+    system.wait(proc.pid, timeout=5)
+    calls = system.process(proc.pid).result["tool_calls"]
+    assert [c["is_error"] for c in calls] == [False, False]  # ... and the next one no longer asks
+    assert system.pending_approvals() == []
