@@ -29,14 +29,19 @@ from agentic_os.agents.goal import GoalAgent, GoalResult
 from agentic_os.agents.multi import Crew
 from agentic_os.config import Settings
 from agentic_os.learning.feedback import FeedbackStore
-from agentic_os.llm import LLMError, LLMProvider, create_llm
+from agentic_os.llm import LLMError, LLMProvider, Message, create_llm
+from agentic_os.mcp import MCPClient, MCPError, MCPServerConfig, config_from_dict
 from agentic_os.memory.embeddings import cosine
+from agentic_os.memory.importer import parse_export
 from agentic_os.memory.long_term import LongTermMemory
 from agentic_os.memory.short_term import ConversationBuffer
+from agentic_os.mods import Mod, ModRegistry
 from agentic_os.observability import Metrics, Tracer
+from agentic_os.planning import PlanError, extract_json
 from agentic_os.prompts import PromptStrategy
 from agentic_os.providers import ProviderRegistry
 from agentic_os.rag.pipeline import Document, RAGPipeline
+from agentic_os.skills import Skill, SkillRegistry
 from agentic_os.tools.builtin import builtin_tools
 from agentic_os.tools.registry import Tool, ToolRegistry, make_tool
 
@@ -89,6 +94,13 @@ class AgenticOS:
         for t in self.memory.as_tools():
             self.tools.register(t)
         self.providers = ProviderRegistry(self._path("providers.json"))
+        self.skills = SkillRegistry(self._path("skills.json"))
+        self.tools.register(self.skills.loader_tool())
+        self.mods = ModRegistry(self._path("mods.json"))
+        for mod in self.mods.all():
+            if mod.enabled:
+                self.tools.register(mod.to_tool())
+        self.mcp: dict[str, MCPClient] = {}
         self.agents: dict[str, Agent | ExternalAgent] = {}
         self.processes: dict[str, Process] = {}
         self._lock = threading.Lock()
@@ -106,6 +118,9 @@ class AgenticOS:
         self._restoring = True
         self.spawn("assistant")
         self._restore(saved_specs)
+        saved_mcp = self._load_json("mcp.json", [])
+        if saved_mcp:  # reconnect in the background so a slow server never blocks startup
+            threading.Thread(target=self._reconnect_mcp, args=(saved_mcp,), daemon=True).start()
 
     # --------------------------------------------------------- persistence
     def _path(self, name: str) -> str | None:
@@ -150,6 +165,24 @@ class AgenticOS:
         finally:
             self._restoring = False
 
+    def _reconnect_mcp(self, saved: list[dict[str, Any]]) -> None:
+        for item in saved:
+            try:
+                cfg = config_from_dict(item)
+            except ValueError:
+                continue
+            client = MCPClient(cfg)
+            self.mcp[cfg.name] = client
+            try:
+                client.connect()
+                for t in client.as_tools():
+                    self.tools.register(t)
+            except MCPError:
+                pass  # status shows the error; the user can retry from the UI
+
+    def _save_mcp(self) -> None:
+        self._save_json("mcp.json", [c.config.__dict__ for c in self.mcp.values()])
+
     def _save_specs(self) -> None:
         if not self._restoring:
             self._save_json("agents.json", list(self._specs.values()))
@@ -170,6 +203,7 @@ class AgenticOS:
         llm: LLMProvider | None = None,
         provider: str | None = None,
         model: str | None = None,
+        skills: Iterable[str] | None = None,
     ) -> Agent:
         """Create and register an agent.
 
@@ -180,14 +214,18 @@ class AgenticOS:
         """
         if provider:
             llm = self.providers.build(provider, model)
+        skill_names = [s for s in (skills or []) if self.skills.get(s)]
         if tools is None and tool_tags is None:
             registry = self.tools
         else:
-            registry = self.tools.subset(tools, tool_tags)
+            needed = set(tools or []) | {"load_skill"} if skill_names else set(tools or [])
+            for s in skill_names:
+                needed |= set(self.skills.get(s).tools)
+            registry = self.tools.subset(needed, tool_tags)
         agent = Agent(
             name,
             llm or self.llm,
-            instructions=instructions,
+            instructions=instructions + self.skills.catalog(skill_names),
             tools=registry,
             memory=ConversationBuffer() if conversational else None,
             long_term=self.memory if use_memory else None,
@@ -199,6 +237,7 @@ class AgenticOS:
         )
         agent.provider_id = provider
         agent.model_name = model or getattr(agent.llm, "model", None)
+        agent.skill_names = skill_names
         self.agents[name] = agent
         if strategy is None:  # prompt strategies are code objects and are not persisted
             self._specs[name] = {
@@ -206,7 +245,7 @@ class AgenticOS:
                 "tools": list(tools) if tools is not None else None,
                 "tool_tags": list(tool_tags) if tool_tags is not None else None,
                 "use_knowledge": use_knowledge, "use_memory": use_memory, "conversational": conversational,
-                "max_steps": max_steps, "provider": provider, "model": model,
+                "max_steps": max_steps, "provider": provider, "model": model, "skills": skill_names,
             }
             self._save_specs()
         return agent
@@ -241,8 +280,96 @@ class AgenticOS:
             "name": name, "kind": "native", "provider": getattr(agent, "provider_id", None) or "default",
             "model": getattr(agent, "model_name", None) or getattr(agent.llm, "model", None),
             "tools": agent.tools.names(), "conversational": agent.memory is not None,
-            "description": agent.instructions[:300],
+            "skills": getattr(agent, "skill_names", []),
+            "description": self._specs.get(name, {}).get("instructions", agent.instructions)[:300],
         }
+
+    # ------------------------------------------------------- skills & mods
+    def add_skill(self, skill: Skill) -> Skill:
+        return self.skills.add(skill)
+
+    def remove_skill(self, name: str) -> bool:
+        return self.skills.remove(name)
+
+    def add_mod(self, mod: Mod) -> Mod:
+        mod = self.mods.add(mod)
+        self.tools.unregister(mod.tool_name)
+        if mod.enabled:
+            self.tools.register(mod.to_tool())
+        return mod
+
+    def remove_mod(self, name: str) -> bool:
+        mod = self.mods.remove(name)
+        if mod is not None:
+            self.tools.unregister(mod.tool_name)
+        return mod is not None
+
+    # ------------------------------------------------------------------ MCP
+    def add_mcp(self, config: MCPServerConfig) -> MCPClient:
+        """Connect an MCP server and expose its tools to agents (raises MCPError if it cannot connect)."""
+        if config.name in self.mcp:
+            self.remove_mcp(config.name)
+        client = MCPClient(config).connect()
+        self.mcp[config.name] = client
+        for t in client.as_tools():
+            self.tools.register(t)
+        self._save_mcp()
+        return client
+
+    def remove_mcp(self, name: str) -> bool:
+        client = self.mcp.pop(name, None)
+        if client is None:
+            return False
+        for t in list(self.tools):
+            if f"mcp:{name}" in t.tags:
+                self.tools.unregister(t.name)
+        client.close()
+        self._save_mcp()
+        return True
+
+    def reconnect_mcp(self, name: str) -> MCPClient:
+        client = self.mcp.get(name)
+        if client is None:
+            raise AgenticOSError(f"No MCP server {name!r}")
+        return self.add_mcp(client.config)
+
+    # ------------------------------------------------------- memory import
+    def import_memory(self, data: bytes, filename: str = "", distill: bool = False,
+                      max_conversations: int = 500, max_distill: int = 30) -> dict[str, Any]:
+        """Import memories exported from another assistant (ChatGPT, Claude, Gemini, Grok, ...)."""
+        parsed = parse_export(data, filename)
+        facts_added = episodes_added = distilled = 0
+        for fact in parsed.facts[:5000]:
+            self.memory.remember(fact, kind="fact", persist=False, source=parsed.source, imported=True)
+            facts_added += 1
+        convs = [c for c in parsed.conversations if c.user_text()][:max_conversations]
+        for conv in convs:
+            self.memory.remember(f"[{parsed.source}] {conv.title}: {conv.user_text()}", kind="episode",
+                                 persist=False, source=parsed.source, imported=True)
+            episodes_added += 1
+        if distill and convs:
+            for conv in convs[:max_distill]:
+                transcript = "\n".join(f"{r}: {t[:800]}" for r, t in conv.messages[:30])
+                try:
+                    reply = self.llm.complete(
+                        [Message.user(f"Conversation '{conv.title}':\n{transcript}")],
+                        system=("Extract durable facts about the USER from this conversation: preferences, "
+                                "goals, projects, background, constraints. Skip anything temporary or about the "
+                                'assistant. Reply with JSON only: {"facts": ["...", "..."]} (empty list if none).'),
+                        max_tokens=1500,
+                    )
+                    facts = extract_json(reply.text).get("facts") or []
+                except (LLMError, PlanError, ValueError):
+                    continue
+                for fact in facts[:10]:
+                    if isinstance(fact, str) and fact.strip():
+                        self.memory.remember(fact.strip()[:500], kind="fact", persist=False,
+                                             source=f"{parsed.source} (wyciągnięte)", imported=True)
+                        distilled += 1
+        self.memory.save()
+        return {"source": parsed.source, "conversations_found": len(parsed.conversations),
+                "facts_added": facts_added, "episodes_added": episodes_added, "distilled_facts": distilled,
+                "memories_total": len(self.memory)}
 
     def agent(self, name: str) -> Agent:
         try:
@@ -434,6 +561,8 @@ class AgenticOS:
         }
 
     def shutdown(self, wait: bool = True) -> None:
+        for client in self.mcp.values():
+            client.close()
         self._executor.shutdown(wait=wait)
 
     def __enter__(self):

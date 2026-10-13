@@ -38,6 +38,7 @@
       <button data-tab="tasks" class="tab">📋<span>Zadania</span></button>
       <button data-tab="brain" class="tab">🧠<span>Mózg</span></button>
       <button data-tab="knowledge" class="tab">📚<span>Wiedza</span></button>
+      <button data-tab="ext" class="tab">🧩<span>Rozszerz.</span></button>
       <button data-tab="models" class="tab">🔑<span>Modele</span></button>
       <button data-tab="monitor" class="tab">📊<span>Monitoring</span></button>
     </nav>
@@ -71,6 +72,7 @@
               <label class="field"><span>Model (opcjonalnie)</span><input name="model" placeholder="domyślny dostawcy"></label>
             </div>
             <fieldset class="field"><legend>Narzędzia</legend><div id="agent-tools" class="chips"></div></fieldset>
+            <fieldset class="field"><legend>Skille (umiejętności)</legend><div id="agent-skills" class="chips"></div></fieldset>
             <label class="check"><input type="checkbox" name="conversational"> Pamięta rozmowę (czat)</label>
             <button class="btn primary" type="submit">Utwórz agenta</button>
           </form>
@@ -129,6 +131,18 @@
         <div class="legend" id="brain-legend"></div>
         <div class="brain-wrap"><canvas id="brain" aria-label="Graf wiedzy"></canvas></div>
         <div id="brain-detail" class="card hidden"></div>
+
+        <details class="card form-card">
+          <summary>📥 Importuj pamięć z innego AI</summary>
+          <div class="stack">
+            <p class="muted small">Wgraj eksport danych z <b>ChatGPT</b> (Ustawienia → Kontrola danych → Eksportuj dane: plik .zip), <b>Claude</b> (Settings → Privacy → Export data), <b>Gemini</b> (Google Takeout → Gemini, format JSON), <b>Grok</b>, <b>DeepSeek</b> lub <b>Mistral</b> (plik .zip/.json). Albo skopiuj listę zapisanych wspomnień z ustawień dowolnego asystenta i wklej ją poniżej.</p>
+            <label class="btn ghost file-btn">📦 Wybierz plik eksportu (.zip / .json / .txt)<input id="mem-file" type="file" accept=".zip,.json,.txt,.md,application/zip,application/json,text/*" hidden></label>
+            <label class="field"><span>…albo wklej wspomnienia (jedno w linii)</span><textarea id="mem-text" rows="4" placeholder="- Mam na imię Daniel&#10;- Pracuję nad grą w Godocie&#10;- Wolę krótkie odpowiedzi"></textarea></label>
+            <label class="check"><input type="checkbox" id="mem-distill"> Niech model wyciągnie najważniejsze fakty z rozmów (zużywa tokeny)</label>
+            <button id="mem-import" class="btn primary" type="button">Importuj</button>
+            <div id="mem-result" class="muted small"></div>
+          </div>
+        </details>
       </section>
 
       <!-- WIEDZA -->
@@ -143,6 +157,65 @@
           </div>
         </form>
         <div id="kb-list" class="list"></div>
+      </section>
+
+      <!-- ROZSZERZENIA -->
+      <section id="tab-ext" class="panel">
+        <h2>Rozszerzenia</h2>
+
+        <h3>🎓 Skille (umiejętności)</h3>
+        <p class="muted small">Pakiety instrukcji, które przypinasz agentom. Agent wczytuje skill, gdy zadanie tego wymaga.</p>
+        <div id="skill-list" class="list"></div>
+        <details class="card form-card">
+          <summary>➕ Dodaj skill</summary>
+          <form id="skill-form" class="stack">
+            <label class="field"><span>Nazwa</span><input name="name" pattern="[a-zA-Z0-9_\-]{1,64}"></label>
+            <label class="field"><span>Opis (kiedy go użyć)</span><input name="description"></label>
+            <label class="field"><span>Instrukcje</span><textarea name="instructions" rows="5" placeholder="Krok po kroku, co agent ma robić…"></textarea></label>
+            <label class="field"><span>Narzędzia (po przecinku, opcjonalnie)</span><input name="tools" placeholder="calculator, csv_summary"></label>
+            <p class="muted small">Albo wklej cały plik <code>SKILL.md</code> (z nagłówkiem name/description):</p>
+            <label class="field"><span>SKILL.md</span><textarea name="markdown" rows="4" placeholder="---&#10;name: my-skill&#10;description: …&#10;---&#10;Instrukcje…"></textarea></label>
+            <button class="btn primary" type="submit">Zapisz skill</button>
+          </form>
+        </details>
+
+        <h3>🛠 Mody (własne narzędzia)</h3>
+        <p class="muted small">Zamień dowolne API w narzędzie agenta, bez programowania.</p>
+        <div id="mod-list" class="list"></div>
+        <details class="card form-card">
+          <summary>➕ Dodaj mod</summary>
+          <form id="mod-form" class="stack">
+            <div class="row">
+              <label class="field"><span>Nazwa</span><input name="name" required pattern="[a-zA-Z0-9_\-]{1,48}"></label>
+              <label class="field"><span>Metoda</span><select name="method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></label>
+            </div>
+            <label class="field"><span>Co robi (opis dla agenta)</span><input name="description" required placeholder="Sprawdza pogodę dla miasta"></label>
+            <label class="field"><span>Adres URL (możesz użyć {parametr})</span><input name="url" type="url" required placeholder="https://api.example.com/weather?city={city}"></label>
+            <label class="field"><span>Parametry (jeden w linii: nazwa:typ:opis)</span><textarea name="params" rows="3" placeholder="city:string:Nazwa miasta"></textarea></label>
+            <div class="row">
+              <label class="field"><span>Nagłówek (np. Authorization)</span><input name="header_name" placeholder="Authorization"></label>
+              <label class="field"><span>Wartość nagłówka</span><input name="header_value" type="password" autocomplete="off" placeholder="Bearer …"></label>
+            </div>
+            <button class="btn primary" type="submit">Zapisz mod</button>
+          </form>
+        </details>
+
+        <h3>🔗 Serwery MCP</h3>
+        <p class="muted small">Podłącz dowolny serwer MCP: jego narzędzia od razu dostają agenci.</p>
+        <div id="mcp-list" class="list"></div>
+        <details class="card form-card">
+          <summary>➕ Podłącz serwer MCP</summary>
+          <form id="mcp-form" class="stack">
+            <div class="row">
+              <label class="field"><span>Nazwa</span><input name="name" required pattern="[a-zA-Z0-9_\-]{1,32}"></label>
+              <label class="field"><span>Połączenie</span><select name="transport"><option value="http">Zdalny (URL)</option><option value="stdio">Lokalny (polecenie)</option></select></label>
+            </div>
+            <label class="field"><span>Adres URL serwera (dla zdalnego)</span><input name="url" type="url" placeholder="https://…/mcp"></label>
+            <label class="field"><span>Token (jeśli wymagany)</span><input name="token" type="password" autocomplete="off"></label>
+            <label class="field"><span>Polecenie (dla lokalnego)</span><input name="command" placeholder="npx -y @modelcontextprotocol/server-everything"></label>
+            <button class="btn primary" type="submit">Połącz</button>
+          </form>
+        </details>
       </section>
 
       <!-- MODELE -->

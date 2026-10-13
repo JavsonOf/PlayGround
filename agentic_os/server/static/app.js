@@ -91,7 +91,7 @@ function showTab(name) {
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
   document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + name));
   store.set("aos_tab", name);
-  ({ agents: loadAgents, tasks: loadTasks, brain: loadBrain, knowledge: loadKnowledge, models: loadModels, monitor: loadMonitor }[name] || (() => {}))();
+  ({ agents: loadAgents, tasks: loadTasks, brain: loadBrain, knowledge: loadKnowledge, ext: loadExt, models: loadModels, monitor: loadMonitor }[name] || (() => {}))();
 }
 document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => showTab(t.dataset.tab)));
 
@@ -172,12 +172,15 @@ function chatEmpty() { chatLog.replaceChildren(el("div", { class: "empty" }, el(
 
 /* ----------------------------------------------------------------- agents */
 async function loadAgents() {
-  try { await Promise.all([refreshAgents(), refreshProviders()]); } catch (err) { toast(err.message, true); return; }
+  let skills = [];
+  try { [, , { skills }] = await Promise.all([refreshAgents(), refreshProviders(), api("/skills")]); } catch (err) { toast(err.message, true); return; }
+  $("#agent-skills").replaceChildren(...(skills.length ? skills.map((s) => el("label", { class: "chip" }, el("input", { type: "checkbox", name: "skills", value: s.name }), s.name)) : [el("span", { class: "muted small", text: "Dodaj skille w zakładce Rozszerzenia." })]));
   $("#agent-list").replaceChildren(...state.agents.map((a) => el("div", { class: "item" },
     el("div", { class: "item-head" }, el("span", { class: "item-title", text: (a.kind === "external" ? "🔌 " : "🤖 ") + a.name }),
       el("span", { class: "tag", text: a.kind === "external" ? a.protocol : `${a.provider} · ${a.model || "?"}` })),
     el("p", { class: "muted small", text: a.description || "" }),
     a.tools && a.tools.length ? el("p", { class: "small", text: "🛠 " + a.tools.join(", ") }) : null,
+    a.skills && a.skills.length ? el("p", { class: "small", text: "🎓 " + a.skills.join(", ") }) : null,
     el("div", { class: "actions" },
       el("button", { class: "btn small", type: "button", text: "💬 Czat", onclick: () => { $("#chat-agent").value = a.name; store.set("aos_chat_agent", a.name); chatEmpty(); showTab("chat"); } }),
       a.name !== "assistant" ? el("button", { class: "btn small ghost danger", type: "button", text: "Usuń", onclick: async () => {
@@ -200,7 +203,7 @@ $("#ext-preset").addEventListener("change", (e) => {
 });
 $("#agent-form").addEventListener("submit", withBusy($("#agent-form"), async (fd) => {
   const body = { name: fd.get("name"), instructions: fd.get("instructions") || undefined, provider: fd.get("provider"),
-    model: fd.get("model") || undefined, tools: fd.getAll("tools"), conversational: fd.get("conversational") === "on" };
+    model: fd.get("model") || undefined, tools: fd.getAll("tools"), skills: fd.getAll("skills"), conversational: fd.get("conversational") === "on" };
   await api("/agents", { method: "POST", body }); toast("Agent utworzony ✅"); $("#agent-form").reset(); loadAgents();
 }));
 $("#ext-form").addEventListener("submit", withBusy($("#ext-form"), async (fd) => {
@@ -405,3 +408,72 @@ async function start() {
 (async () => {
   try { await api("/auth/check"); start(); } catch { showLogin(); }
 })();
+
+/* ------------------------------------------------------------ extensions */
+async function loadExt() {
+  try {
+    const [{ skills }, { mods }, { servers }] = await Promise.all([api("/skills"), api("/mods"), api("/mcp")]);
+    $("#skill-list").replaceChildren(...(skills.length ? skills.map((s) => el("div", { class: "item" },
+      el("div", { class: "item-head" }, el("span", { class: "item-title", text: "🎓 " + s.name }), s.tools.length ? el("span", { class: "tag", text: s.tools.join(", ") }) : null),
+      el("p", { class: "muted small", text: s.description }),
+      el("div", { class: "actions" }, delBtn(`/skills/${s.name}`, `skill ${s.name}`, loadExt)))) : [el("p", { class: "muted small", text: "Brak skilli." })]));
+    $("#mod-list").replaceChildren(...(mods.length ? mods.map((m) => el("div", { class: "item" },
+      el("div", { class: "item-head" }, el("span", { class: "item-title", text: "🛠 " + m.name }), el("span", { class: "tag", text: `${m.method} · ${m.tool}` })),
+      el("p", { class: "muted small", text: `${m.description} · ${m.url}` }),
+      el("div", { class: "actions" }, delBtn(`/mods/${m.name}`, `mod ${m.name}`, loadExt)))) : [el("p", { class: "muted small", text: "Brak modów." })]));
+    $("#mcp-list").replaceChildren(...(servers.length ? servers.map((s) => el("div", { class: "item" },
+      el("div", { class: "item-head" }, el("span", { class: "item-title", text: "🔗 " + s.name }), el("span", { class: "tag " + (s.connected ? "ok" : "err"), text: s.connected ? `połączony · ${s.tools.length} narz.` : "rozłączony" })),
+      el("p", { class: "muted small", text: s.error ? "Błąd: " + s.error : (s.tools.join(", ") || (s.url || s.command)) }),
+      el("div", { class: "actions" },
+        el("button", { class: "btn small", type: "button", text: "Połącz ponownie", onclick: async (ev) => {
+          ev.target.disabled = true;
+          try { await api(`/mcp/${s.name}/reconnect`, { method: "POST", body: {} }); toast("Połączono ✅"); } catch (err) { toast(err.message, true); } finally { loadExt(); }
+        } }),
+        delBtn(`/mcp/${s.name}`, `serwer ${s.name}`, loadExt)))) : [el("p", { class: "muted small", text: "Brak serwerów MCP." })]));
+  } catch (err) { toast(err.message, true); }
+}
+function delBtn(path, label, after) {
+  return el("button", { class: "btn small ghost danger", type: "button", text: "Usuń", onclick: async () => {
+    if (!confirm(`Usunąć ${label}?`)) return;
+    try { await api(path, { method: "DELETE" }); toast("Usunięto"); after(); } catch (err) { toast(err.message, true); }
+  } });
+}
+$("#skill-form").addEventListener("submit", withBusy($("#skill-form"), async (fd) => {
+  const md = (fd.get("markdown") || "").trim();
+  const body = md ? { markdown: md, name: fd.get("name") || undefined } : { name: fd.get("name"), description: fd.get("description"), instructions: fd.get("instructions"), tools: fd.get("tools") };
+  await api("/skills", { method: "POST", body }); toast("Skill zapisany ✅"); $("#skill-form").reset(); loadExt();
+}));
+$("#mod-form").addEventListener("submit", withBusy($("#mod-form"), async (fd) => {
+  const params = String(fd.get("params") || "").split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+    const [name, type = "string", ...desc] = l.split(":"); return { name: name.trim(), type: type.trim() || "string", description: desc.join(":").trim() };
+  });
+  const headers = fd.get("header_name") ? { [fd.get("header_name")]: fd.get("header_value") || "" } : {};
+  await api("/mods", { method: "POST", body: { name: fd.get("name"), method: fd.get("method"), description: fd.get("description"), url: fd.get("url"), params, headers } });
+  toast("Mod zapisany ✅"); $("#mod-form").reset(); loadExt();
+}));
+$("#mcp-form").addEventListener("submit", withBusy($("#mcp-form"), async (fd) => {
+  const body = Object.fromEntries(fd); if (!body.token) delete body.token;
+  toast("Łączę z serwerem MCP…");
+  const s = await api("/mcp", { method: "POST", body }); toast(`Połączono ✅ (${s.tools.length} narzędzi)`); $("#mcp-form").reset(); loadExt();
+}));
+
+/* --------------------------------------------------------- memory import */
+$("#mem-import").addEventListener("click", async (ev) => {
+  const file = $("#mem-file").files[0]; const text = $("#mem-text").value.trim(); const distill = $("#mem-distill").checked;
+  if (!file && !text) { toast("Wybierz plik albo wklej wspomnienia", true); return; }
+  if (file && file.size > 60 * 1024 * 1024) { toast("Plik jest za duży (max 60 MB)", true); return; }
+  ev.target.disabled = true; $("#mem-result").textContent = "Importuję…" + (distill ? " (model analizuje rozmowy, to może potrwać)" : "");
+  try {
+    let r;
+    if (file) {
+      const res = await fetch(`/memory/import?filename=${encodeURIComponent(file.name)}&distill=${distill ? 1 : 0}`, {
+        method: "POST", headers: { "Content-Type": "application/octet-stream", ...(token ? { Authorization: "Bearer " + token } : {}) }, body: file });
+      r = await res.json(); if (!res.ok) throw new Error(r.error || `Błąd ${res.status}`);
+    } else {
+      r = await api("/memory/import", { method: "POST", body: { text, distill } });
+    }
+    $("#mem-result").textContent = `✅ Źródło: ${r.source}. Rozmowy: ${r.conversations_found}, dodane epizody: ${r.episodes_added}, fakty: ${r.facts_added}` + (r.distilled_facts ? `, wyciągnięte fakty: ${r.distilled_facts}` : "") + `. Wspomnień razem: ${r.memories_total}.`;
+    $("#mem-file").value = ""; $("#mem-text").value = ""; loadBrain();
+  } catch (err) { $("#mem-result").textContent = "❌ " + err.message; } finally { ev.target.disabled = false; }
+});
+$("#mem-file").addEventListener("change", (e) => { const f = e.target.files[0]; $("#mem-result").textContent = f ? `Wybrano: ${f.name} (${(f.size / 1024 / 1024).toFixed(1)} MB)` : ""; });

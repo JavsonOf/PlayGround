@@ -52,9 +52,10 @@ class ProviderConfig:
 
 
 def mask(key: str) -> str:
+    """Hide a secret; long keys keep their last 4 characters so they can be told apart."""
     if not key:
         return ""
-    return ("•" * 8) + key[-4:] if len(key) > 8 else "•" * len(key)
+    return ("•" * 8) + key[-4:] if len(key) >= 16 else "•" * 8
 
 
 class ProviderRegistry:

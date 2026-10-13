@@ -101,12 +101,12 @@ def test_openai_compat_errors_and_edge_cases():
 def test_provider_registry_masks_persists_and_validates(tmp_path):
     path = str(tmp_path / "providers.json")
     reg = ProviderRegistry(path)
-    reg.upsert(ProviderConfig("groq", "openai_compat", api_key="gsk_secret_1234", base_url="https://api.groq.com/openai/v1", default_model="m1"))
+    reg.upsert(ProviderConfig("groq", "openai_compat", api_key="gsk_secret_long_1234", base_url="https://api.groq.com/openai/v1", default_model="m1"))
     pub = reg.public()[0]
-    assert pub["api_key"] == mask("gsk_secret_1234") and pub["api_key"].endswith("1234") and "secret" not in pub["api_key"]
+    assert pub["api_key"] == mask("gsk_secret_long_1234") and pub["api_key"].endswith("1234") and "secret" not in pub["api_key"]
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
     reg.upsert(ProviderConfig("groq", "openai_compat", base_url="https://api.groq.com/openai/v1", default_model="m2"))
-    assert ProviderRegistry(path).get("groq").api_key == "gsk_secret_1234"  # edit without key keeps key
+    assert ProviderRegistry(path).get("groq").api_key == "gsk_secret_long_1234"  # edit without key keeps key
     llm = ProviderRegistry(path).build("groq")
     assert isinstance(llm, OpenAICompatProvider) and llm.model == "m2"
     for bad in (ProviderConfig("bad id", "openai_compat", base_url="https://x"), ProviderConfig("x", "nope"),

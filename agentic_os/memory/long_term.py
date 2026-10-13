@@ -29,12 +29,17 @@ class LongTermMemory:
     def __init__(self, store: VectorStore | None = None, embedder: Embedder | None = None, path: str | None = None) -> None:
         self.store = store or VectorStore(embedder=embedder, path=path)
 
-    def remember(self, text: str, kind: str = "fact", **metadata: Any) -> str:
+    def remember(self, text: str, kind: str = "fact", persist: bool = True, **metadata: Any) -> str:
+        """Store a memory. Pass ``persist=False`` in bulk loops and call :meth:`save` once at the end."""
         meta = {"kind": kind, "created_at": time.time(), **metadata}
         rid = self.store.add(text, meta)
+        if persist:
+            self.save()
+        return rid
+
+    def save(self) -> None:
         if self.store.path:
             self.store.save()
-        return rid
 
     def recall(self, query: str, k: int = 3, kind: str | None = None, min_score: float = 0.15) -> list[Memory]:
         where = {"kind": kind} if kind else None

@@ -31,6 +31,10 @@ POST     /chat/reset                       ``{agent?, session?}``
 POST     /crew                             ``{task, agents, process?}`` run a crew (async)
 GET      /knowledge                        ingested documents
 GET      /graph                            knowledge/memory graph for the Brain view
+GET/POST /skills, DELETE /skills/{name}    skills (``{name, description, instructions, tools}`` or ``{markdown}``)
+GET/POST /mods, DELETE /mods/{name}        custom HTTP tools
+GET/POST /mcp, DELETE /mcp/{name}          MCP servers; POST /mcp/{name}/reconnect
+POST     /memory/import?filename=&distill= raw export file (zip/json/txt, up to 60 MB) or JSON ``{text}``
 =======  ================================  =========================================
 
 Set ``AGENTIC_OS_API_KEY`` to require ``Authorization: Bearer <key>``. The
@@ -43,16 +47,21 @@ import hmac
 import json
 import os
 import re
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from agentic_os.agents.external import AGENT_PRESETS, PROTOCOLS, ExternalAgentConfig
 from agentic_os.kernel import AgenticOS, AgenticOSError
 from agentic_os.llm.base import LLMError, Message
+from agentic_os.mcp import MCPError, config_from_dict
+from agentic_os.mods import mod_from_dict
 from agentic_os.providers import PRESETS, ProviderConfig
 from agentic_os.rag.pipeline import Document
+from agentic_os.skills import Skill, parse_skill_md
 
 MAX_BODY = 2 * 1024 * 1024
+MAX_UPLOAD = 60 * 1024 * 1024
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -151,7 +160,7 @@ def make_handler(system: AgenticOS) -> type[BaseHTTPRequestHandler]:
                 self._send(exc.status, {"error": exc.message})
             except AgenticOSError as exc:
                 self._send(404, {"error": str(exc)})
-            except (LLMError, ValueError) as exc:
+            except (LLMError, MCPError, ValueError) as exc:
                 self._send(400, {"error": str(exc)})
             except Exception as exc:  # noqa: BLE001
                 system.metrics.incr("http.errors")
@@ -196,6 +205,12 @@ def make_handler(system: AgenticOS) -> type[BaseHTTPRequestHandler]:
                     return 200, system.graph()
                 if path == "/auth/check":
                     return 200, {"ok": True}
+                if path == "/skills":
+                    return 200, {"skills": system.skills.public()}
+                if path == "/mods":
+                    return 200, {"mods": [m.public() for m in system.mods.all()]}
+                if path == "/mcp":
+                    return 200, {"servers": [c.status() for c in system.mcp.values()]}
                 if path == "/processes":
                     return 200, {"processes": system.ps()}
                 if m := re.fullmatch(r"/processes/(\w+)", path):
@@ -213,9 +228,52 @@ def make_handler(system: AgenticOS) -> type[BaseHTTPRequestHandler]:
                     system.agent(m.group(1))
                     system.kill(m.group(1))
                     return 200, {"ok": True}
-                raise HTTPError(404, f"No route for DELETE {path}")
+                removers = {"skills": system.remove_skill, "mods": system.remove_mod, "mcp": system.remove_mcp}
+                if (m := re.fullmatch(r"/(skills|mods|mcp)/([\w-]+)", path)) and removers[m.group(1)](m.group(2)):
+                    return 200, {"ok": True}
+                raise HTTPError(404, f"No route or item for DELETE {path}")
+
+            if path == "/memory/import":
+                query = urllib.parse.parse_qs(self.path.partition("?")[2])
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > MAX_UPLOAD:
+                    raise HTTPError(413, "Plik jest za duży (max 60 MB)")
+                raw = self.rfile.read(length) if length else b""
+                filename = query.get("filename", [""])[0]
+                distill = query.get("distill", ["0"])[0] in ("1", "true", "yes")
+                if self.headers.get("Content-Type", "").startswith("application/json"):
+                    try:
+                        payload = json.loads(raw or b"{}")
+                    except json.JSONDecodeError as exc:
+                        raise HTTPError(400, f"Invalid JSON: {exc}") from exc
+                    if isinstance(payload, dict) and isinstance(payload.get("text"), str):
+                        raw, filename = payload["text"].encode(), payload.get("filename") or "wklejone.txt"
+                        distill = bool(payload.get("distill", distill))
+                if not raw.strip():
+                    raise HTTPError(400, "Pusty plik")
+                return 200, system.import_memory(raw, filename, distill=distill)
 
             body = self._body()
+            if path == "/skills":
+                if isinstance(body.get("markdown"), str):
+                    skill = parse_skill_md(body["markdown"], str(body.get("name") or ""))
+                else:
+                    tools = body.get("tools") or []
+                    if isinstance(tools, str):
+                        tools = [t.strip() for t in tools.split(",") if t.strip()]
+                    skill = Skill(name=str(body.get("name", "")), description=str(body.get("description", "")),
+                                  instructions=str(body.get("instructions", "")), tools=list(tools))
+                return 201, system.add_skill(skill).__dict__
+            if path == "/mods":
+                return 201, system.add_mod(mod_from_dict(body)).public()
+            if path == "/mcp":
+                data = dict(body)
+                if data.get("token"):
+                    data.setdefault("headers", {})["Authorization"] = f"Bearer {data.pop('token')}"
+                client = system.add_mcp(config_from_dict(data))
+                return 201, client.status()
+            if m := re.fullmatch(r"/mcp/([\w-]+)/reconnect", path):
+                return 200, system.reconnect_mcp(m.group(1)).status()
             if path == "/providers":
                 pid = _require(body, "id")
                 cfg = ProviderConfig(
@@ -279,6 +337,8 @@ def make_handler(system: AgenticOS) -> type[BaseHTTPRequestHandler]:
                 }
                 if body.get("instructions"):
                     kwargs["instructions"] = str(body["instructions"])
+                if isinstance(body.get("skills"), list):
+                    kwargs["skills"] = [str(s) for s in body["skills"]]
                 if body.get("provider") and body["provider"] != "default":
                     kwargs["provider"] = str(body["provider"])
                     kwargs["model"] = str(body.get("model") or "") or None

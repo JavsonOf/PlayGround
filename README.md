@@ -82,6 +82,24 @@ See [`agentic_os/config.py`](agentic_os/config.py) for every setting.
 [`docs/ROADMAP.md`](docs/ROADMAP.md) walks through each stage with the
 concepts, the code to read, and exercises.
 
+## War Room (web app)
+
+`agentic-os serve` also serves the **War Room**, a mobile-first web app (Polish UI) that you can install on
+Android as an app (PWA). It needs `AGENTIC_OS_API_KEY` as its password.
+
+| Tab | What you can do |
+|---|---|
+| 💬 Czat | Multi-turn chat with any agent; see the tools it used and its sources; 👍/👎 feedback |
+| 🤖 Agenci | Create agents (instructions, model, tools, skills), connect external agents (OpenAI-compatible such as Hermes/Grok/OpenClaw, A2A, webhook), run crews |
+| 📋 Zadania | Every run as a process with status and result |
+| 🧠 Mózg | Knowledge graph of documents, facts, episodes and lessons; **import memory** from ChatGPT, Claude, Gemini (Takeout), Grok, DeepSeek, Mistral exports, or a pasted memory list |
+| 📚 Wiedza | Add documents to the knowledge base (RAG) |
+| 🧩 Rozszerzenia | **Skills** (SKILL.md instruction packs), **mods** (turn any HTTP API into a tool), **MCP servers** (remote Streamable HTTP or local stdio) |
+| 🔑 Modele | API keys for any LLM: Anthropic, Gemini, OpenAI, xAI, OpenRouter, Groq, DeepSeek, Mistral, Hugging Face, Ollama or any OpenAI-compatible server |
+| 📊 Monitoring | Token usage, tool calls, latency percentiles |
+
+Keys and secrets are stored only on the server (owner-only files under `AGENTIC_OS_DATA_DIR`) and are returned masked.
+
 ## Core concepts
 
 **Agent** (`Agent`): a model, instructions, tools, and optional memory and
