@@ -127,7 +127,7 @@ class SkillRegistry:
             parameters={"type": "object", "properties": {"name": {"type": "string", "description": "Skill name."}},
                         "required": ["name"]},
             func=load_skill,
-            tags={"skills"},
+            tags={"skills", "readonly"},
         )
 
     def public(self) -> list[dict[str, Any]]:

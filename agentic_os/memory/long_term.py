@@ -78,5 +78,5 @@ class LongTermMemory:
 
         return [
             make_tool(remember_fact, tags=["memory"]),
-            make_tool(recall_memories, tags=["memory"]),
+            make_tool(recall_memories, tags=["memory", "readonly"]),
         ]

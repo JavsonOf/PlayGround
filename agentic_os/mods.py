@@ -98,7 +98,8 @@ class Mod:
                 return f"Request failed: {exc.reason}"
             return text[:MAX_RESPONSE] + (" …[truncated]" if len(text) > MAX_RESPONSE else "")
 
-        return Tool(name=self.tool_name, description=self.description, parameters=schema, func=call, tags={"mod"})
+        tags = {"mod", "readonly"} if self.method.upper() == "GET" else {"mod"}
+        return Tool(name=self.tool_name, description=self.description, parameters=schema, func=call, tags=tags)
 
 
 def mod_from_dict(data: dict[str, Any]) -> Mod:

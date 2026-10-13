@@ -28,8 +28,11 @@ from agentic_os.agents.external import ExternalAgent, ExternalAgentConfig
 from agentic_os.agents.goal import GoalAgent, GoalResult
 from agentic_os.agents.multi import Crew
 from agentic_os.config import Settings
+from agentic_os.learning.bandit import EpsilonGreedy
 from agentic_os.learning.feedback import FeedbackStore
+from agentic_os.learning.reflection import LLMJudge, ReflectiveAgent
 from agentic_os.llm import LLMError, LLMProvider, Message, create_llm
+from agentic_os.llm.base import ToolCall
 from agentic_os.mcp import MCPClient, MCPError, MCPServerConfig, config_from_dict
 from agentic_os.memory.embeddings import cosine
 from agentic_os.memory.importer import parse_export
@@ -38,12 +41,35 @@ from agentic_os.memory.short_term import ConversationBuffer
 from agentic_os.mods import Mod, ModRegistry
 from agentic_os.observability import Metrics, Tracer
 from agentic_os.planning import PlanError, extract_json
-from agentic_os.prompts import PromptStrategy
+from agentic_os.prompts import PromptStrategy, default_strategies
 from agentic_os.providers import ProviderRegistry
 from agentic_os.rag.pipeline import Document, RAGPipeline
 from agentic_os.skills import Skill, SkillRegistry
 from agentic_os.tools.builtin import builtin_tools
 from agentic_os.tools.registry import Tool, ToolRegistry, make_tool
+
+AGENT_MODES = ("standard", "reflective", "adaptive")
+MAX_DELEGATION_DEPTH = 3  # stops agents that delegate to each other from looping forever
+APPROVAL_TIMEOUT = 300.0  # seconds a tool call or question waits for the operator
+FULL_ACCESS_MAX_STEPS = 25
+# How much an agent may do without the operator:
+#   ask   - every tool call waits for approval
+#   smart - read-only tools run freely, anything that changes something needs approval,
+#           and the agent can ask the user a question when it judges it necessary
+#   auto  - works autonomously within its selected tools, never waits for the user
+#   full  - every tool, MCP server, mod and agent in the system, no confirmations
+PERMISSIONS = ("ask", "smart", "auto", "full")
+PERMISSION_NOTES = {
+    "ask": "\n\nThe operator approves each of your tool calls. If a call is denied, do not repeat it: "
+           "try another way or explain what you would need.",
+    "smart": "\n\nAct on your own for routine, reversible steps. When a choice is ambiguous, irreversible, costly "
+             "or depends on the user's preferences, call ask_user first. Tools that change things outside this "
+             "system wait for the operator's approval; if one is denied, do not repeat it.",
+    "auto": "\n\nWork autonomously: the user will not answer questions during the task, so make reasonable "
+            "decisions yourself and state your assumptions in the answer.",
+    "full": "\n\nYou have full access to every tool and agent in this system and no confirmations are required. "
+            "Work autonomously, state your assumptions, and avoid irreversible actions the task does not need.",
+}
 
 
 class AgenticOSError(RuntimeError):
@@ -55,12 +81,13 @@ class Process:
     pid: str
     agent: str
     task: str
-    status: str = "queued"  # queued | running | completed | failed
+    status: str = "queued"  # queued | running | waiting (for the operator) | completed | failed
     result: dict[str, Any] | None = None
     error: str | None = None
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
+    strategy: str | None = None  # prompt strategy an adaptive agent picked for this run
     _future: Future | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -74,7 +101,136 @@ class Process:
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "strategy": self.strategy,
         }
+
+
+@dataclass
+class Approval:
+    """Something waiting for the operator (human in the loop).
+
+    ``kind="tool"``: a tool call to allow or deny. ``kind="question"``: the
+    agent asked the user something (``ask_user``) and waits for an answer.
+    """
+
+    id: str
+    pid: str | None
+    agent: str
+    tool: str
+    arguments: dict[str, Any]
+    kind: str = "tool"
+    created_at: float = field(default_factory=time.time)
+    decision: bool | None = None
+    answer: str | None = None
+    _event: threading.Event = field(default_factory=threading.Event, repr=False)
+
+    def public(self) -> dict[str, Any]:
+        return {"id": self.id, "kind": self.kind, "pid": self.pid, "agent": self.agent, "tool": self.tool,
+                "arguments": self.arguments, "created_at": self.created_at}
+
+
+class _LayeredRegistry(ToolRegistry):
+    """A live view of a shared registry plus agent-specific tools (e.g. delegation)."""
+
+    def __init__(self, base: ToolRegistry, extra: Iterable[Tool]) -> None:
+        self._base = base
+        self._extra = {t.name: t for t in extra}
+
+    @property
+    def _tools(self) -> dict[str, Tool]:  # type: ignore[override]
+        return {**self._base._tools, **self._extra}
+
+    def register(self, t: Tool | Callable[..., Any]) -> Tool:
+        if not isinstance(t, Tool):
+            t = make_tool(t)
+        self._extra[t.name] = t
+        return t
+
+    def unregister(self, name: str) -> None:
+        self._extra.pop(name, None)
+
+
+class _FullAccessRegistry(ToolRegistry):
+    """Every tool in the system plus delegation to every other agent, always current."""
+
+    def __init__(self, system: AgenticOS, owner: str) -> None:
+        self._system = system
+        self._owner = owner
+
+    @property
+    def _tools(self) -> dict[str, Tool]:  # type: ignore[override]
+        tools = dict(self._system.tools._tools)
+        for name in list(self._system.agents):
+            if name != self._owner:
+                tools[f"ask_{name}"] = self._system._delegate_tool(name)
+        return tools
+
+    def register(self, t: Tool | Callable[..., Any]) -> Tool:
+        return self._system.tools.register(t)
+
+
+class _ReadOnlyMemory:
+    """Lets reflective attempts see the conversation without each one being saved to it."""
+
+    def __init__(self, buffer: ConversationBuffer) -> None:
+        self._buffer = buffer
+
+    def messages(self) -> list[Message]:
+        return self._buffer.messages()
+
+    def add_turn(self, messages: list[Message]) -> None:
+        pass
+
+
+class _RunResult:
+    """An agent result plus extra fields (reflection attempts, chosen strategy)."""
+
+    def __init__(self, result: Any, **extra: Any) -> None:
+        self.result = result
+        self.extra = extra
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**self.result.to_dict(), **self.extra}
+
+
+class _ReflectiveRunner:
+    """Runs an agent Reflexion-style: answer, grade, critique, retry; keeps the best attempt."""
+
+    def __init__(self, agent: Agent, lessons: LongTermMemory | None, max_attempts: int = 3,
+                 threshold: float = 0.8) -> None:
+        self.agent = agent
+        self.lessons = lessons
+        self.max_attempts = max_attempts
+        self.threshold = threshold
+
+    def run(self, task: str, context: str | None = None) -> _RunResult:
+        buffer = self.agent.memory
+        worker = copy.copy(self.agent)
+        worker.memory = _ReadOnlyMemory(buffer) if buffer is not None else None
+        results: list[Any] = []
+
+        class _Recorder:
+            llm = worker.llm
+
+            @staticmethod
+            def run(task: str, context: str | None = None) -> Any:
+                merged = "\n\n".join(c for c in (outer, context) if c) or None
+                res = worker.run(task, context=merged)
+                results.append(res)
+                return res
+
+        outer = context
+        reflection = ReflectiveAgent(_Recorder(), LLMJudge(worker.llm), max_attempts=self.max_attempts,  # type: ignore[arg-type]
+                                     threshold=self.threshold, lessons=self.lessons).run(task)
+        best_i = max(range(len(reflection.attempts)), key=lambda i: reflection.attempts[i].score)
+        best = results[best_i]
+        if buffer is not None:
+            buffer.add_turn(best.messages)
+        usage = {k: sum(r.usage.get(k, 0) for r in results) for k in ("input_tokens", "output_tokens")}
+        return _RunResult(best, usage=usage, reflection={
+            "best_score": round(reflection.best_score, 3),
+            "attempts": [{"score": round(a.score, 3), "critique": a.critique} for a in reflection.attempts],
+        })
 
 
 class AgenticOS:
@@ -108,6 +264,12 @@ class AgenticOS:
         self._specs: dict[str, dict[str, Any]] = {}
         self._sessions: dict[tuple[str, str], ConversationBuffer] = {}
         self._restoring = False
+        self._local = threading.local()  # current pid and delegation depth of the running thread
+        self.approvals: dict[str, Approval] = {}
+        self.strategies = default_strategies()
+        self._bandits: dict[str, EpsilonGreedy] = {}
+        self._bandit_state: dict[str, Any] = self._load_json("bandits.json", {})
+        self._rewards: dict[str, float] = {}  # pid -> reward already credited to a bandit
         self.prefs: dict[str, Any] = self._load_json("settings.json", {})
         if llm is None and self.prefs.get("default_provider"):
             try:
@@ -138,9 +300,17 @@ class AgenticOS:
         if not path:
             return
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # may hold API keys
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh)
+        # write a private temp file and swap it in, so a concurrent reader never sees a half-written file
+        tmp = f"{path}.{uuid.uuid4().hex[:8]}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # may hold API keys
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            os.replace(tmp, path)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
 
     def _restore(self, saved_specs: list[dict[str, Any]]) -> None:
         """Re-create saved agents and re-ingest saved knowledge after a restart."""
@@ -152,6 +322,8 @@ class AgenticOS:
                     if spec.pop("type", "native") == "external":
                         self.register_external(ExternalAgentConfig(**spec))
                     else:
+                        if spec.pop("approval", False):  # older specs stored a yes/no approval flag
+                            spec.setdefault("permission", "ask")
                         self.spawn(spec.pop("name"), **spec)
                 except (LLMError, ValueError, TypeError):
                     continue  # skip a spec that no longer works rather than failing startup
@@ -204,6 +376,10 @@ class AgenticOS:
         provider: str | None = None,
         model: str | None = None,
         skills: Iterable[str] | None = None,
+        mode: str = "standard",
+        permission: str = "auto",
+        delegates: Iterable[str] | None = None,
+        always_allow: Iterable[str] | None = None,
     ) -> Agent:
         """Create and register an agent.
 
@@ -211,7 +387,19 @@ class AgenticOS:
         registry (it sees tools registered later too); otherwise it gets a
         fixed subset. ``provider``/``model`` pick a configured provider (see
         :attr:`providers`); otherwise the OS default model is used.
+
+        ``mode`` is ``standard``, ``reflective`` (grade, critique and retry,
+        storing lessons) or ``adaptive`` (a bandit learns which prompt
+        strategy earns the best feedback). ``permission`` is one of
+        :data:`PERMISSIONS` (see :meth:`decide_approval` for answering).
+        ``delegates`` names agents this one may hand sub-tasks to;
+        ``always_allow`` lists tools the operator approved permanently.
         """
+        if mode not in AGENT_MODES:
+            raise ValueError(f"mode must be one of {AGENT_MODES}")
+        if permission not in PERMISSIONS:
+            raise ValueError(f"permission must be one of {PERMISSIONS}")
+        delegate_names = [d for d in dict.fromkeys(delegates or []) if d != name and _valid_name(d)]
         if provider:
             llm = self.providers.build(provider, model)
         skill_names = [s for s in (skills or []) if self.skills.get(s)]
@@ -222,22 +410,41 @@ class AgenticOS:
             for s in skill_names:
                 needed |= set(self.skills.get(s).tools)
             registry = self.tools.subset(needed, tool_tags)
+        extra = [self._delegate_tool(d) for d in delegate_names]
+        if permission in ("ask", "smart"):
+            extra.append(self._ask_user_tool(name))
+        if permission == "full":
+            registry = _FullAccessRegistry(self, name)
+        elif extra:
+            registry = _LayeredRegistry(registry, extra)
+        steps = max_steps or self.settings.max_steps
+        if permission == "full":
+            steps = max(steps, FULL_ACCESS_MAX_STEPS)
         agent = Agent(
             name,
             llm or self.llm,
-            instructions=instructions + self.skills.catalog(skill_names),
+            instructions=instructions + self.skills.catalog(skill_names) + PERMISSION_NOTES[permission],
             tools=registry,
             memory=ConversationBuffer() if conversational else None,
             long_term=self.memory if use_memory else None,
             knowledge=self.knowledge if use_knowledge else None,
             strategy=strategy,
-            max_steps=max_steps or self.settings.max_steps,
+            max_steps=steps,
             tracer=self.tracer,
             metrics=self.metrics,
+            approve_tool=self._approval_hook(name),  # reads the agent's current permission on every call
         )
         agent.provider_id = provider
         agent.model_name = model or getattr(agent.llm, "model", None)
         agent.skill_names = skill_names
+        agent.mode, agent.permission, agent.delegates = mode, permission, delegate_names
+        agent.always_allow = {t for t in (always_allow or []) if isinstance(t, str)}
+        if mode == "adaptive":
+            bandit = EpsilonGreedy(list(self.strategies), epsilon=0.15, seed=None)
+            bandit.load_dict(self._bandit_state.get(name, {}))
+            self._bandits[name] = bandit
+        else:
+            self._bandits.pop(name, None)
         self.agents[name] = agent
         if strategy is None:  # prompt strategies are code objects and are not persisted
             self._specs[name] = {
@@ -246,6 +453,8 @@ class AgenticOS:
                 "tool_tags": list(tool_tags) if tool_tags is not None else None,
                 "use_knowledge": use_knowledge, "use_memory": use_memory, "conversational": conversational,
                 "max_steps": max_steps, "provider": provider, "model": model, "skills": skill_names,
+                "mode": mode, "permission": permission, "delegates": delegate_names,
+                "always_allow": sorted(agent.always_allow),
             }
             self._save_specs()
         return agent
@@ -281,8 +490,183 @@ class AgenticOS:
             "model": getattr(agent, "model_name", None) or getattr(agent.llm, "model", None),
             "tools": agent.tools.names(), "conversational": agent.memory is not None,
             "skills": getattr(agent, "skill_names", []),
+            "mode": getattr(agent, "mode", "standard"), "permission": getattr(agent, "permission", "auto"),
+            "always_allow": sorted(getattr(agent, "always_allow", set())),
+            "delegates": getattr(agent, "delegates", []), "learning": self._learning(name),
             "description": self._specs.get(name, {}).get("instructions", agent.instructions)[:300],
         }
+
+    def _learning(self, name: str) -> dict[str, Any] | None:
+        bandit = self._bandits.get(name)
+        if bandit is None:
+            return None
+        rated = any(st.pulls for st in bandit.stats.values())
+        return {"strategies": bandit.summary(), "best": bandit.best() if rated else None}
+
+    def _save_bandits(self) -> None:
+        self._bandit_state.update({n: b.to_dict() for n, b in self._bandits.items()})
+        self._save_json("bandits.json", self._bandit_state)
+
+    # ----------------------------------------------------- human in the loop
+    def _wait_for_operator(self, agent_name: str, tool: str, arguments: dict[str, Any], kind: str) -> Approval:
+        """Park the running process until the operator answers (or the timeout passes)."""
+        pid = getattr(self._local, "pid", None)
+        item = Approval(uuid.uuid4().hex[:10], pid, agent_name, tool, arguments, kind=kind)
+        proc = self.processes.get(pid) if pid else None
+        with self._lock:
+            self.approvals[item.id] = item
+        if proc is not None:
+            proc.status = "waiting"
+        try:
+            item._event.wait(APPROVAL_TIMEOUT)
+        finally:
+            with self._lock:
+                self.approvals.pop(item.id, None)
+            if proc is not None and proc.status == "waiting":
+                proc.status = "running"
+        return item
+
+    @staticmethod
+    def is_read_only(tool: Tool | None) -> bool:
+        """Tools that only read (or delegate to an agent with its own permissions) are safe to run unasked."""
+        if tool is None:
+            return True  # an unknown tool fails on its own without side effects
+        return "readonly" in tool.tags or ("agent" in tool.tags and "external" not in tool.tags)
+
+    def _approval_hook(self, agent_name: str) -> Callable[[ToolCall], bool]:
+        def hook(call: ToolCall) -> bool:
+            agent = self.agents.get(agent_name)
+            # the permission is looked up live, so a change applies even to a task that is already running
+            permission = getattr(agent, "permission", "auto")
+            if permission in ("auto", "full"):
+                return True
+            if call.name == "ask_user" or call.name in getattr(agent, "always_allow", ()):
+                return True
+            if permission == "smart" and agent is not None:
+                tool = agent.tools._tools.get(call.name)
+                if self.is_read_only(tool):
+                    return True
+            item = self._wait_for_operator(agent_name, call.name, dict(call.arguments or {}), "tool")
+            return bool(item.decision)
+
+        return hook
+
+    def _ask_user_tool(self, agent_name: str) -> Tool:
+        def ask_user(question: str) -> str:
+            item = self._wait_for_operator(agent_name, "ask_user", {"question": question}, "question")
+            if not item.answer:
+                return ("The user did not answer. Make the most reasonable decision yourself and state the "
+                        "assumption in your answer.")
+            return f"The user answered: {item.answer}"
+
+        return Tool(
+            name="ask_user",
+            description=("Ask the user a short question and wait for the answer. Use it only when a decision is "
+                         "ambiguous, irreversible, costly or depends on the user's preferences."),
+            parameters={
+                "type": "object",
+                "properties": {"question": {"type": "string", "description": "One clear question, with options if useful."}},
+                "required": ["question"],
+            },
+            func=ask_user,
+            tags={"human"},
+        )
+
+    def pending_approvals(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [a.public() for a in sorted(self.approvals.values(), key=lambda a: a.created_at)]
+
+    def decide_approval(self, approval_id: str, approve: bool = True, *, remember: bool = False,
+                        answer: str | None = None) -> None:
+        """Answer the operator queue: allow/deny a tool call or answer an agent's question.
+
+        ``remember=True`` with ``approve=True`` adds the tool to the agent's
+        ``always_allow`` list so it is not asked again.
+        """
+        with self._lock:
+            item = self.approvals.get(approval_id)
+        if item is None:
+            raise AgenticOSError(f"No pending approval {approval_id!r} (it may have timed out)")
+        if item.kind == "question":
+            item.answer = (answer or "").strip()[:4000]
+            item.decision = True
+        else:
+            item.decision = bool(approve)
+            agent = self.agents.get(item.agent)
+            if approve and remember and isinstance(agent, Agent):
+                agent.always_allow.add(item.tool)
+                if item.agent in self._specs:
+                    self._specs[item.agent]["always_allow"] = sorted(agent.always_allow)
+                    self._save_specs()
+        item._event.set()
+
+    def update_agent(self, name: str, *, permission: str | None = None, mode: str | None = None) -> Agent:
+        """Change an agent's permission level and/or thinking mode at any time.
+
+        The agent is rebuilt from its saved spec, so tools, delegation and
+        instructions follow the new setting; chat sessions, learned strategy
+        stats and "always allow" approvals are kept. Tool calls already
+        waiting for approval are allowed when switching to ``auto``/``full``.
+        """
+        agent = self.agent(name)
+        if not isinstance(agent, Agent):
+            raise ValueError("External agents have no permission or mode settings")  # noqa: TRY004 - maps to HTTP 400
+        spec = self._specs.get(name)
+        if spec is None:
+            raise ValueError(f"Agent {name!r} was created in code with a custom strategy and cannot be changed here")
+        spec = {k: v for k, v in spec.items() if k not in ("type", "name")}
+        if permission is not None:
+            spec["permission"] = permission
+        if mode is not None:
+            spec["mode"] = mode
+        spec["always_allow"] = sorted(getattr(agent, "always_allow", set()))
+        if name in self._bandits:
+            self._save_bandits()
+        updated = self.spawn(name, **spec)
+        if updated.permission in ("auto", "full"):
+            for item in list(self.approvals.values()):
+                if item.agent == name and item.kind == "tool":
+                    item.decision = True
+                    item._event.set()
+        return updated
+
+    def reset_always_allow(self, name: str) -> None:
+        """Forget the tools the operator approved permanently for an agent."""
+        agent = self.agent(name)
+        if isinstance(agent, Agent):
+            agent.always_allow = set()
+            if name in self._specs:
+                self._specs[name]["always_allow"] = []
+                self._save_specs()
+
+    # ------------------------------------------------------------ delegation
+    def _delegate_tool(self, target: str) -> Tool:
+        """A tool that hands a sub-task to another agent, resolved when called."""
+
+        def delegate(task: str) -> str:
+            depth = getattr(self._local, "depth", 0)
+            if depth >= MAX_DELEGATION_DEPTH:
+                return "Delegation limit reached; finish this part yourself."
+            other = self.agents.get(target)
+            if other is None:
+                return f"There is no agent named {target!r} any more."
+            self._local.depth = depth + 1
+            try:
+                return other.run(task).output
+            finally:
+                self._local.depth = depth
+
+        return Tool(
+            name=f"ask_{target}",
+            description=f"Delegate a self-contained sub-task to the '{target}' agent and get its answer back.",
+            parameters={
+                "type": "object",
+                "properties": {"task": {"type": "string", "description": "A complete, self-contained instruction."}},
+                "required": ["task"],
+            },
+            func=delegate,
+            tags={"agent"},
+        )
 
     # ------------------------------------------------------- skills & mods
     def add_skill(self, skill: Skill) -> Skill:
@@ -381,6 +765,7 @@ class AgenticOS:
         if name == "assistant":
             raise AgenticOSError("The default 'assistant' agent cannot be removed")
         self.agents.pop(name, None)
+        self._bandits.pop(name, None)
         if self._specs.pop(name, None) is not None:
             self._save_specs()
         for key in [k for k in self._sessions if k[0] == name]:
@@ -421,11 +806,28 @@ class AgenticOS:
             self.processes[proc.pid] = proc
         return proc
 
+    def _with_mode(self, proc: Process, runner: Any) -> Any:
+        """Apply the agent's thinking mode (reflective / adaptive) for this run."""
+        if not isinstance(runner, Agent):
+            return runner
+        mode = getattr(runner, "mode", "standard")
+        bandit = self._bandits.get(proc.agent)
+        if mode == "adaptive" and bandit is not None:
+            proc.strategy = bandit.select()
+            runner = copy.copy(runner)
+            runner.strategy = self.strategies[proc.strategy]
+        elif mode == "reflective":
+            return _ReflectiveRunner(runner, self.memory if runner.long_term is not None else None)
+        return runner
+
     def _execute(self, proc: Process, context: str | None, runner: Any = None) -> Process:
         proc.status, proc.started_at = "running", time.time()
+        self._local.pid = proc.pid
         try:
-            result = (runner or self.agents[proc.agent]).run(proc.task, context=context)
+            result = self._with_mode(proc, runner or self.agents[proc.agent]).run(proc.task, context=context)
             proc.result = result.to_dict()
+            if proc.strategy:
+                proc.result["strategy"] = proc.strategy
             proc.status = "completed"
             self.metrics.incr("os.processes.completed")
         except Exception as exc:  # noqa: BLE001 - recorded on the process
@@ -433,6 +835,7 @@ class AgenticOS:
             self.metrics.incr("os.processes.failed")
         finally:
             proc.finished_at = time.time()
+            self._local.pid = None
         return proc
 
     def run(self, task: str, agent: str = "assistant", context: str | None = None) -> Process:
@@ -483,7 +886,15 @@ class AgenticOS:
     def give_feedback(self, pid: str, reward: float, comment: str = "") -> None:
         """Record a reward in [-1, 1] for a finished process (human feedback)."""
         proc = self.process(pid)
-        self.feedback.add(pid, reward, arm=proc.agent, comment=comment)
+        self.feedback.add(pid, reward, arm=proc.agent, comment=comment, strategy=proc.strategy)
+        bandit = self._bandits.get(proc.agent)
+        if bandit is not None and proc.strategy in bandit.stats:
+            if pid in self._rewards:  # changed their mind: replace the earlier reward
+                bandit.stats[proc.strategy].total_reward += reward - self._rewards[pid]
+            else:
+                bandit.update(proc.strategy, reward)
+            self._rewards[pid] = reward
+            self._save_bandits()
         if reward >= 0.5 and proc.result:
             self.memory.remember(
                 f"A well-rated answer to '{proc.task[:200]}': {proc.result['output'][:400]}",
@@ -558,6 +969,7 @@ class AgenticOS:
             "memories": len(self.memory),
             "processes": counts,
             "feedback": len(self.feedback),
+            "approvals": len(self.approvals),
         }
 
     def shutdown(self, wait: bool = True) -> None:
@@ -570,3 +982,7 @@ class AgenticOS:
 
     def __exit__(self, *exc: object) -> None:
         self.shutdown()
+
+
+def _valid_name(name: str) -> bool:
+    return 0 < len(name) <= 40 and all(c.isalnum() or c in "_-" for c in name)

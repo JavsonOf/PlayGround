@@ -90,7 +90,7 @@ Android as an app (PWA). It needs `AGENTIC_OS_API_KEY` as its password.
 | Tab | What you can do |
 |---|---|
 | 💬 Czat | Multi-turn chat with any agent; see the tools it used and its sources; 👍/👎 feedback |
-| 🤖 Agenci | Create agents (instructions, model, tools, skills), connect external agents (OpenAI-compatible such as Hermes/Grok/OpenClaw, A2A, webhook), run crews |
+| 🤖 Agenci | Create agents (instructions, model, tools, skills, thinking mode, delegation, tool approval), connect external agents (OpenAI-compatible such as Hermes/Grok/OpenClaw, A2A, webhook), run crews |
 | 📋 Zadania | Every run as a process with status and result |
 | 🧠 Mózg | Knowledge graph of documents, facts, episodes and lessons; **import memory** from ChatGPT, Claude, Gemini (Takeout), Grok, DeepSeek, Mistral exports, or a pasted memory list |
 | 📚 Wiedza | Add documents to the knowledge base (RAG) |
@@ -120,6 +120,35 @@ delegates via tools, a `router` (trained classifier or LLM), and `plan`
 **Self-improvement**: `AdaptiveAgent` treats prompt strategies as bandit
 arms and learns from rewards (automatic or human). `ReflectiveAgent` grades,
 critiques and retries, and stores lessons in long-term memory for future runs.
+
+All of this is available from the kernel and the War Room, not only in code:
+`spawn(name, mode="reflective" | "adaptive", permission="ask" | "smart" | "auto" | "full", delegates=[...])`.
+
+* `mode="reflective"`: every chat or task answer is graded, critiqued and retried. Only the best attempt is
+  kept in the conversation, and the critiques are stored as lessons.
+* `mode="adaptive"`: each run picks a prompt strategy (concise, step by step, expert) with an epsilon-greedy
+  bandit. 👍/👎 in the chat updates it, and the stats persist in `bandits.json`.
+* `permission` sets how much the agent may do on its own:
+  * `ask`: every tool call waits until the operator taps *Zezwól*, *Zawsze* (always allow this tool for
+    this agent) or *Odmów* in the War Room (`GET /approvals`, `POST /approvals/{id}`).
+  * `smart`: read-only tools run freely. Tools tagged `readonly` include the built-ins, knowledge search,
+    memory recall, `GET` mods and MCP tools whose server sets `readOnlyHint`. Anything that changes
+    something waits for approval, and the agent gets an `ask_user` tool to ask the user a question when it
+    judges a decision ambiguous, irreversible or a matter of preference.
+  * `auto` (default): autonomous within its selected tools, never waits for the user.
+  * `full`: every tool, MCP server, mod and agent in the system (including ones added later), with no
+    confirmations and a higher step limit.
+
+  Approvals and questions that nobody answers time out after 5 minutes: the tool call is denied and the
+  question is left for the agent to decide.
+
+  Permission and thinking mode can be changed at any time with `update_agent(name, permission=..., mode=...)`
+  (`POST /agents/{name}/settings`). In the War Room this is done from the agent card or the selector next to
+  the chat. The change applies immediately, even to a task that is already running. Switching to `auto` or
+  `full` lets any tool call that is waiting for approval through. Chat history, learned strategy stats and
+  "always allow" approvals are kept.
+* `delegates=[...]`: gives the agent `ask_<agent>` tools to hand off sub-tasks. Delegation is limited to 3
+  levels so agents that call each other cannot loop forever.
 
 ## HTTP API
 

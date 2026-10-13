@@ -62,7 +62,7 @@ def safe_eval(expression: str) -> float | int:
     return ev(ast.parse(expression.replace("^", "**"), mode="eval"))
 
 
-@tool(tags=["math", "core"])
+@tool(tags=["math", "core", "readonly"])
 def calculator(expression: str) -> str:
     """Evaluate an arithmetic expression exactly. Use this for any math instead of mental arithmetic.
 
@@ -75,7 +75,7 @@ def calculator(expression: str) -> str:
     return f"{expression} = {result}"
 
 
-@tool(tags=["text", "core"])
+@tool(tags=["text", "core", "readonly"])
 def text_stats(text: str) -> dict:
     """Count characters, words, sentences and lines in a piece of text.
 
@@ -92,7 +92,7 @@ def text_stats(text: str) -> dict:
     }
 
 
-@tool(tags=["data", "core"])
+@tool(tags=["data", "core", "readonly"])
 def csv_summary(csv_text: str) -> dict:
     """Summarize CSV data: row count, and per-column type plus statistics (min/max/mean for numbers, top values otherwise).
 

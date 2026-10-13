@@ -10,7 +10,8 @@ GET      /health                           liveness probe
 GET      /status                           OS summary
 GET      /metrics                          counters and latency percentiles
 GET      /agents                           registered agents
-POST     /agents                           spawn ``{name, instructions?, tools?, tool_tags?, conversational?}``
+POST     /agents                           spawn ``{name, instructions?, tools?, tool_tags?, conversational?,
+                                           mode?, permission?, delegates?}``
 POST     /run                              ``{task, agent?, context?, async?}`` -> process
 GET      /processes                        process table
 GET      /processes/{pid}                  one process, with its result
@@ -35,6 +36,10 @@ GET/POST /skills, DELETE /skills/{name}    skills (``{name, description, instruc
 GET/POST /mods, DELETE /mods/{name}        custom HTTP tools
 GET/POST /mcp, DELETE /mcp/{name}          MCP servers; POST /mcp/{name}/reconnect
 POST     /memory/import?filename=&distill= raw export file (zip/json/txt, up to 60 MB) or JSON ``{text}``
+GET      /approvals                        tool calls and agent questions waiting for the operator
+POST     /approvals/{id}                   ``{approve: bool, remember?: bool}`` or ``{answer: str}`` for a question
+DELETE   /agents/{name}/allowed            forget the tools approved with "always allow"
+POST     /agents/{name}/settings           ``{permission?, mode?}`` change an agent at any time
 =======  ================================  =========================================
 
 Set ``AGENTIC_OS_API_KEY`` to require ``Authorization: Bearer <key>``. The
@@ -213,6 +218,8 @@ def make_handler(system: AgenticOS) -> type[BaseHTTPRequestHandler]:
                     return 200, {"servers": [c.status() for c in system.mcp.values()]}
                 if path == "/processes":
                     return 200, {"processes": system.ps()}
+                if path == "/approvals":
+                    return 200, {"approvals": system.pending_approvals()}
                 if m := re.fullmatch(r"/processes/(\w+)", path):
                     return 200, system.process(m.group(1)).to_dict()
                 if m := re.fullmatch(r"/traces/(\w+)", path):
@@ -223,6 +230,9 @@ def make_handler(system: AgenticOS) -> type[BaseHTTPRequestHandler]:
                 if m := re.fullmatch(r"/providers/([\w-]+)", path):
                     if not system.providers.remove(m.group(1)):
                         raise HTTPError(404, f"No provider {m.group(1)!r}")
+                    return 200, {"ok": True}
+                if m := re.fullmatch(r"/agents/([\w-]+)/allowed", path):
+                    system.reset_always_allow(m.group(1))
                     return 200, {"ok": True}
                 if m := re.fullmatch(r"/agents/([\w-]+)", path):
                     system.agent(m.group(1))
@@ -342,8 +352,27 @@ def make_handler(system: AgenticOS) -> type[BaseHTTPRequestHandler]:
                 if body.get("provider") and body["provider"] != "default":
                     kwargs["provider"] = str(body["provider"])
                     kwargs["model"] = str(body.get("model") or "") or None
+                kwargs["mode"] = str(body.get("mode") or "standard")
+                kwargs["permission"] = str(body.get("permission") or ("ask" if body.get("approval") else "auto"))
+                if isinstance(body.get("delegates"), list):
+                    kwargs["delegates"] = [str(d) for d in body["delegates"]]
                 agent = system.spawn(name, **kwargs)
                 return 201, system.describe(agent.name)
+            if m := re.fullmatch(r"/agents/([\w-]+)/settings", path):
+                agent = system.update_agent(m.group(1), permission=body.get("permission") or None,
+                                            mode=body.get("mode") or None)
+                return 200, system.describe(agent.name)
+            if m := re.fullmatch(r"/approvals/(\w+)", path):
+                answer, approve = body.get("answer"), body.get("approve")
+                if answer is not None:
+                    if not isinstance(answer, str):
+                        raise HTTPError(400, "'answer' must be text")
+                    system.decide_approval(m.group(1), answer=answer)
+                elif isinstance(approve, bool):
+                    system.decide_approval(m.group(1), approve, remember=bool(body.get("remember", False)))
+                else:
+                    raise HTTPError(400, "Send 'approve' (true/false) or 'answer'")
+                return 200, {"ok": True}
             if m := re.fullmatch(r"/processes/(\w+)/feedback", path):
                 reward = body.get("reward")
                 if not isinstance(reward, (int, float)) or not -1 <= reward <= 1:
