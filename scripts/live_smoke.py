@@ -1,7 +1,10 @@
 """Live smoke test against the real Claude API.
 
 Exercises each major layer once with the real model and reports PASS/FAIL per
-check. Needs ANTHROPIC_API_KEY. Run: python scripts/live_smoke.py
+check. Needs ANTHROPIC_API_KEY, or an Anthropic-compatible gateway such as
+OpenRouter (ANTHROPIC_BASE_URL=https://openrouter.ai/api, ANTHROPIC_AUTH_TOKEN,
+AGENTIC_OS_MODEL=anthropic/claude-opus-5.5, AGENTIC_OS_FALLBACKS=false).
+Run: python scripts/live_smoke.py
 """
 
 from __future__ import annotations
@@ -21,8 +24,9 @@ from agentic_os.tools import calculator
 
 MODEL = os.environ.get("AGENTIC_OS_MODEL", "claude-opus-5-5")
 EFFORT = os.environ.get("AGENTIC_OS_EFFORT", "low")
+FALLBACKS = Settings().fallbacks
 
-llm = AnthropicProvider(MODEL, effort=EFFORT)
+llm = AnthropicProvider(MODEL, effort=EFFORT, fallbacks=FALLBACKS)
 results: list[tuple[str, bool, str]] = []
 usage = {"input_tokens": 0, "output_tokens": 0}
 
@@ -125,5 +129,5 @@ def _():
 
 
 passed = sum(ok for _, ok, _ in results)
-print("\n" + json.dumps({"model": MODEL, "effort": EFFORT, "passed": passed, "total": len(results), "usage_tracked": usage}))
+print("\n" + json.dumps({"model": MODEL, "effort": EFFORT, "fallbacks": FALLBACKS, "passed": passed, "total": len(results), "usage_tracked": usage}))
 sys.exit(0 if passed == len(results) else 1)

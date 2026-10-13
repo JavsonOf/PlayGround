@@ -1,13 +1,14 @@
 name: Live Claude test
 
 # Calls the real Claude API (costs tokens), so it only runs on demand or when
-# the live smoke test itself changes. Requires the ANTHROPIC_API_KEY secret.
+# the live smoke test itself changes. Uses the OPENROUTER_API_KEY secret when set
+# (via OpenRouter's Anthropic-compatible endpoint), else ANTHROPIC_API_KEY.
 on:
   workflow_dispatch:
     inputs:
       model:
-        description: Claude model id
-        default: claude-opus-5-5
+        description: Model id (empty = claude-opus-5-5, or anthropic/claude-opus-5.5 on OpenRouter)
+        default: ""
       effort:
         description: Effort level
         default: low
@@ -29,8 +30,21 @@ jobs:
       - name: Live smoke test
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          AGENTIC_OS_MODEL: ${{ inputs.model || 'claude-opus-5-5' }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          MODEL_INPUT: ${{ inputs.model }}
           AGENTIC_OS_EFFORT: ${{ inputs.effort || 'low' }}
         run: |
-          if [ -z "$ANTHROPIC_API_KEY" ]; then echo "::error::ANTHROPIC_API_KEY secret is not set"; exit 1; fi
+          if [ -n "$OPENROUTER_API_KEY" ]; then
+            echo "Using OpenRouter (Anthropic-compatible endpoint)"
+            unset ANTHROPIC_API_KEY
+            export ANTHROPIC_BASE_URL=https://openrouter.ai/api
+            export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"
+            export AGENTIC_OS_FALLBACKS=false
+            export AGENTIC_OS_MODEL="${MODEL_INPUT:-anthropic/claude-opus-5.5}"
+          elif [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "Using the Anthropic API"
+            export AGENTIC_OS_MODEL="${MODEL_INPUT:-claude-opus-5-5}"
+          else
+            echo "::error::Set the OPENROUTER_API_KEY or ANTHROPIC_API_KEY repository secret"; exit 1
+          fi
           python scripts/live_smoke.py
