@@ -3,7 +3,8 @@
 Exercises each major layer once with the real model and reports PASS/FAIL per
 check. Needs ANTHROPIC_API_KEY, or an Anthropic-compatible gateway such as
 OpenRouter (ANTHROPIC_BASE_URL=https://openrouter.ai/api, ANTHROPIC_AUTH_TOKEN,
-AGENTIC_OS_MODEL=anthropic/claude-opus-5.5, AGENTIC_OS_FALLBACKS=false).
+AGENTIC_OS_MODEL=anthropic/claude-opus-5.5 or openrouter/free,
+AGENTIC_OS_FALLBACKS=false, AGENTIC_OS_EFFORT= to omit effort).
 Run: python scripts/live_smoke.py
 """
 
@@ -26,7 +27,20 @@ MODEL = os.environ.get("AGENTIC_OS_MODEL", "claude-opus-5-5")
 EFFORT = os.environ.get("AGENTIC_OS_EFFORT", "low")
 FALLBACKS = Settings().fallbacks
 
-llm = AnthropicProvider(MODEL, effort=EFFORT, fallbacks=FALLBACKS)
+SERVED: set[str] = set()
+
+
+class RecordingProvider(AnthropicProvider):
+    """Remembers which models actually served requests (routers like openrouter/free vary)."""
+
+    def complete(self, *args, **kwargs):
+        response = super().complete(*args, **kwargs)
+        if response.model:
+            SERVED.add(response.model)
+        return response
+
+
+llm = RecordingProvider(MODEL, effort=EFFORT or None, fallbacks=FALLBACKS)
 results: list[tuple[str, bool, str]] = []
 usage = {"input_tokens": 0, "output_tokens": 0}
 
@@ -120,7 +134,7 @@ def _():
 
 @check("kernel: AgenticOS process end-to-end")
 def _():
-    with AgenticOS(Settings(provider="anthropic", model=MODEL, effort=EFFORT)) as system:
+    with AgenticOS(Settings(provider="anthropic", model=MODEL, effort=EFFORT), llm=llm) as system:
         system.ingest("Agentic OS assigns every agent run a process id (PID).", source="os.md")
         proc = system.run("According to the knowledge base, what does Agentic OS assign every agent run?")
         assert proc.status == "completed", proc.error
@@ -129,5 +143,5 @@ def _():
 
 
 passed = sum(ok for _, ok, _ in results)
-print("\n" + json.dumps({"model": MODEL, "effort": EFFORT, "fallbacks": FALLBACKS, "passed": passed, "total": len(results), "usage_tracked": usage}))
+print("\n" + json.dumps({"model": MODEL, "effort": EFFORT, "fallbacks": FALLBACKS, "served_by": sorted(SERVED), "passed": passed, "total": len(results), "usage_tracked": usage}))
 sys.exit(0 if passed == len(results) else 1)

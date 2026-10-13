@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       model:
-        description: Model id (empty = claude-opus-5-5, or anthropic/claude-opus-5.5 on OpenRouter)
+        description: Model id (empty = claude-opus-5-5 on Anthropic, openrouter/free on OpenRouter)
         default: ""
       effort:
         description: Effort level
@@ -40,7 +40,8 @@ jobs:
             export ANTHROPIC_BASE_URL=https://openrouter.ai/api
             export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"
             export AGENTIC_OS_FALLBACKS=false
-            export AGENTIC_OS_MODEL="${MODEL_INPUT:-anthropic/claude-opus-5.5}"
+            export AGENTIC_OS_MODEL="${MODEL_INPUT:-openrouter/free}"
+            case "$AGENTIC_OS_MODEL" in anthropic/*) ;; *) export AGENTIC_OS_EFFORT="" ;; esac  # effort is Claude-only
           elif [ -n "$ANTHROPIC_API_KEY" ]; then
             echo "Using the Anthropic API"
             export AGENTIC_OS_MODEL="${MODEL_INPUT:-claude-opus-5-5}"
