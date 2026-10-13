@@ -13,6 +13,7 @@ dependencies = []
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=1.0"]
+gemini = ["google-genai>=2.0"]
 dev = ["pytest>=8", "ruff>=0.5"]
 
 [project.scripts]
