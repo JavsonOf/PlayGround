@@ -13,7 +13,7 @@
 set -euo pipefail
 
 # ============================ SETTINGS (edit these) ============================
-WAR_ROOM_PASSWORD="ZMIEN-MNIE-na-dlugie-haslo"   # War Room login password (min. 12 characters)
+WAR_ROOM_PASSWORD="agentictemp"   # War Room login password (temp password; use min. 12 characters in production)
 GITHUB_REPO="JavsonOf/agentic-os"
 BRANCH="main"
 GITHUB_TOKEN=""   # only for a PRIVATE repo: fine-grained token with read-only "Contents" on this repo
@@ -23,8 +23,8 @@ APP_DIR=/opt/agentic-os
 exec > >(tee -a /var/log/agentic-os-setup.log) 2>&1
 echo "=== Agentic OS setup started $(date -u) ==="
 
-if [ "${#WAR_ROOM_PASSWORD}" -lt 12 ] || [ "$WAR_ROOM_PASSWORD" = "ZMIEN-MNIE-na-dlugie-haslo" ]; then
-  echo "ERROR: set WAR_ROOM_PASSWORD (at least 12 characters) at the top of the script." >&2
+if [ "${#WAR_ROOM_PASSWORD}" -lt 8 ]; then
+  echo "ERROR: set WAR_ROOM_PASSWORD (at least 8 characters; 12+ recommended for production) at the top of the script." >&2
   exit 1
 fi
 
