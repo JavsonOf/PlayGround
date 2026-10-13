@@ -300,9 +300,17 @@ class AgenticOS:
         if not path:
             return
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # may hold API keys
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh)
+        # write a private temp file and swap it in, so a concurrent reader never sees a half-written file
+        tmp = f"{path}.{uuid.uuid4().hex[:8]}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # may hold API keys
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            os.replace(tmp, path)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
 
     def _restore(self, saved_specs: list[dict[str, Any]]) -> None:
         """Re-create saved agents and re-ingest saved knowledge after a restart."""

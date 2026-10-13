@@ -219,9 +219,11 @@ def test_read_only_classification():
 def test_permission_and_mode_can_change_at_any_time(tmp_path):
     system = make_os(tmp_path, [call("remember_fact", fact="x"), "Done.", call("remember_fact", fact="y"), "Done."])
     system.spawn("flex", conversational=True)
-    system.chat("hello", agent="flex", wait=False)  # creates a session that must survive the change
+    first = system.chat("hello", agent="flex", wait=False)  # creates a session that must survive the change
+    system.wait(first.pid, timeout=5)
     flex = system.update_agent("flex", permission="ask", mode="adaptive")
     assert (flex.permission, flex.mode) == ("ask", "adaptive") and "ask_user" in flex.tools
+    assert ("flex", next(iter(system._sessions))[1]) in system._sessions  # chat history kept
     reloaded = make_os(tmp_path, [])
     assert reloaded.describe("flex")["permission"] == "ask"  # persisted
 
