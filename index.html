@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#141a2e" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>Dev Tycoon 2.5D — Isometric Game Studio Tycoon</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎮</text></svg>" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app">
+  <!-- ===== Top HUD ===== -->
+  <header id="hud">
+    <div class="hud-left">
+      <div id="logo" aria-label="Dev Tycoon">🎮<span>Dev Tycoon <em>2.5D</em></span></div>
+      <div id="date-chip" title="Game date"><span id="hud-date">Y1 M1 W1</span><span id="hud-speed-dot" class="dot"></span></div>
+    </div>
+    <div class="hud-stats">
+      <div class="stat money" title="Cash">💰 <b id="hud-money">$80.0K</b><small id="hud-delta"></small></div>
+      <div class="stat" title="Fans">⭐ <b id="hud-fans">0</b></div>
+      <div class="stat" title="Research points">🔬 <b id="hud-rp">0</b></div>
+      <div class="stat" title="Hype">🔥 <b id="hud-hype">0</b></div>
+    </div>
+    <div class="hud-right">
+      <button id="btn-speed" class="icon-btn" title="Pause / speed">⏩<small id="speed-label">1×</small></button>
+      <button id="btn-sound" class="icon-btn" title="Sound">🔊</button>
+      <button id="btn-menu" class="icon-btn" title="Menu">☰</button>
+    </div>
+  </header>
+
+  <!-- ===== Isometric viewport ===== -->
+  <main id="viewport-wrap">
+    <canvas id="iso"></canvas>
+    <div id="office-label"><span id="office-name">🏠 Garage Office</span><span id="staff-count"></span></div>
+    <div id="viewport-tools">
+      <button id="zoom-out" class="icon-btn" title="Zoom out">−</button>
+      <button id="zoom-in" class="icon-btn" title="Zoom in">+</button>
+      <button id="btn-center" class="icon-btn" title="Center office">⌂</button>
+    </div>
+    <div id="project-banner" class="hidden">
+      <div class="pb-top"><b id="pb-name">Untitled Game</b><span id="pb-stage">Development</span></div>
+      <div class="pb-bar"><div id="pb-fill"></div></div>
+      <div class="pb-sub"><span id="pb-pct">0%</span><span id="pb-bugs"></span></div>
+    </div>
+    <div id="sales-toast" class="hidden"></div>
+    <div id="hint-bubble" class="hidden"></div>
+  </main>
+
+  <!-- ===== Bottom action bar (phone/tablet) ===== -->
+  <nav id="actionbar">
+    <button class="act primary" data-tab="develop">🕹️<span>Develop</span></button>
+    <button class="act" data-tab="staff">🧑‍💻<span>Staff</span></button>
+    <button class="act" data-tab="research">🔬<span>Research</span></button>
+    <button class="act" data-tab="market">📣<span>Market</span></button>
+    <button class="act" data-tab="office">🏢<span>Office</span></button>
+  </nav>
+
+  <!-- ===== Bottom sheet panel ===== -->
+  <section id="sheet" class="closed">
+    <div id="sheet-handle"></div>
+    <div id="sheet-head"><h2 id="sheet-title">Develop</h2><button id="sheet-close" class="icon-btn">✕</button></div>
+    <div id="sheet-body"></div>
+  </section>
+
+  <!-- ===== Modal ===== -->
+  <div id="modal-veil" class="hidden"><div id="modal" role="dialog" aria-modal="true">
+    <div id="modal-head"><h2 id="modal-title"></h2><button id="modal-close" class="icon-btn">✕</button></div>
+    <div id="modal-body"></div>
+  </div></div>
+
+  <div id="toasts"></div>
+
+  <!-- ===== Boot / start screen ===== -->
+  <div id="boot">
+    <div class="boot-card">
+      <div class="boot-logo">🎮</div>
+      <h1>Dev Tycoon <span class="iso-tag">2.5D</span></h1>
+      <p class="tagline">Build games. Hire nerds. Rule the charts.<br/>Isometric studio tycoon for phone &amp; tablet.</p>
+      <label class="studio-label">Studio name
+        <input id="studio-name" maxlength="24" value="Pixel Forge" />
+      </label>
+      <div class="diff-row">
+        <button class="diff selected" data-diff="easy">😌 Indie<br/><small>$120K start</small></button>
+        <button class="diff" data-diff="normal">🙂 Garage<br/><small>$80K start</small></button>
+        <button class="diff" data-diff="hard">🥵 Ramen<br/><small>$40K start</small></button>
+      </div>
+      <button id="btn-start">▶ Start Studio</button>
+      <button id="btn-continue" class="ghost hidden">↩ Continue saved game</button>
+      <p class="how">🖱️ Drag to pan • pinch / +− to zoom • tap staff for info<br/>Ship hits, earn fans, move from garage → HQ!</p>
+    </div>
+  </div>
+</div>
+<script src="js/data.js"></script>
+<script src="js/iso.js"></script>
+<script src="js/sim.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
