@@ -8,6 +8,10 @@ PORT="${PORT:-3000}"
 export PORT
 AGENTIC_OS_API_KEY="${AGENTIC_OS_API_KEY:-agentictemp}"
 export AGENTIC_OS_API_KEY
+AGENTIC_OS_DATA_DIR="${AGENTIC_OS_DATA_DIR:-$PROJECT_DIR/data}"
+export AGENTIC_OS_DATA_DIR
+/usr/bin/time -p mkdir -p "$AGENTIC_OS_DATA_DIR"
+echo "data_dir=$AGENTIC_OS_DATA_DIR"
 WEB_DIR="${OPENCODE_WEB_DIR:-/home/runner/work/_temp/omgithub-web}"
 echo "project=$PROJECT_DIR port=$PORT dist=$DIST_DIR web_dir=$WEB_DIR"
 /usr/bin/time -p mkdir -p "$DIST_DIR"
